@@ -47,6 +47,8 @@ type operationsResponse struct {
 	Operations []Operation `json:"operations"`
 }
 
+var cli *webdaclient.Client
+
 func userHome() string {
 	h, _ := os.UserHomeDir()
 	return h
@@ -77,6 +79,7 @@ type TokenInfo struct {
 	Sequence     string
 }
 
+// TODO Encrypt token file contents on disk.
 func parseTokenFile(path string) (TokenInfo, error) {
 	var ti TokenInfo
 	b, err := os.ReadFile(path)
@@ -141,7 +144,7 @@ func acquireToken(ctx context.Context, name, baseURL string) (string, error) {
 			return
 		}
 		// fetch current user
-		if user, err := fetchCurrentUser(ctx, baseURL, access); err == nil {
+		if user, err := fetchCurrentUser(ctx); err == nil {
 			fmt.Printf("Authenticated as user: %s (ID: %s)\n", user.Email, user.UUID)
 		}
 		// persist all
@@ -177,11 +180,6 @@ func acquireToken(ctx context.Context, name, baseURL string) (string, error) {
 		_ = srv.Shutdown(context.Background())
 		return "", errors.New("auth timeout")
 	}
-}
-
-var tokenRegexps = []*regexp.Regexp{
-	regexp.MustCompile(`"refresh_token"\s*:\s*"([^"]+)"`),
-	regexp.MustCompile(`"sequence"\s*:\s*"?([0-9A-Za-z_-]+)"?`),
 }
 
 // extractToken returns refresh_token and sequence.
@@ -239,11 +237,9 @@ type User struct {
 	Email string `json:"email"`
 }
 
-func fetchCurrentUser(ctx context.Context, baseURL, accessToken string) (User, error) {
+func fetchCurrentUser(ctx context.Context) (User, error) {
 	var u User
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/auth/me", nil)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cli.Request("GET", "/auth/me", nil)
 	if err != nil {
 		return u, err
 	}
@@ -257,9 +253,8 @@ func fetchCurrentUser(ctx context.Context, baseURL, accessToken string) (User, e
 	return u, nil
 }
 
-func fetchOperations(ctx context.Context, name, baseURL string, cli *webdaclient.Client) ([]Operation, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/operations", nil)
-	resp, err := cli.Do(req)
+func fetchOperations(ctx context.Context, name string) ([]Operation, error) {
+	resp, err := cli.Request("GET", "/operations", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -270,28 +265,69 @@ func fetchOperations(ctx context.Context, name, baseURL string, cli *webdaclient
 	body, _ := io.ReadAll(resp.Body)
 	// persist
 	_ = os.WriteFile(opsPath(name), body, 0o600)
-	// Try parse
-	var list []Operation
+	return parseOperations(body)
+}
+
+// parseOperations parses the operations specification JSON body into a slice of Operation.
+// It supports several shapes:
+// - top-level array of operations
+// - object with `operations` array
+// - object with `operations` map (the 'normal' format used by the user)
+// - openapi-like `paths` map
+func parseOperations(body []byte) ([]Operation, error) {
 	// shape 1: top-level array
+	var list []Operation
 	if err := json.Unmarshal(body, &list); err == nil && len(list) > 0 {
 		return list, nil
 	}
-	// shape 2: object with operations
+
+	// shape 2: object with operations (array)
 	var respWrap operationsResponse
 	if err := json.Unmarshal(body, &respWrap); err == nil && len(respWrap.Operations) > 0 {
 		return respWrap.Operations, nil
 	}
-	// shape 3: openapi-like
-	var generic map[string]any
-	if err := json.Unmarshal(body, &generic); err == nil {
-		if paths, ok := generic["paths"].(map[string]any); ok {
+
+	// shape 3: object with operations as a map (expected normal format)
+	var gen map[string]any
+	if err := json.Unmarshal(body, &gen); err == nil {
+		if opsAny, ok := gen["operations"]; ok {
+			switch ops := opsAny.(type) {
+			case map[string]any:
+				out := make([]Operation, 0, len(ops))
+				// each key is the operation name, value may contain id, input, permission, etc.
+				for key, v := range ops {
+					op := Operation{Name: key}
+					if m, ok := v.(map[string]any); ok {
+						if id, ok := m["id"].(string); ok && id != "" {
+							op.Name = id
+						}
+						if desc, ok := m["description"].(string); ok {
+							op.Description = desc
+						}
+						// capture the raw map for consumers
+						op.Raw = m
+						// If input references a schema, record it in Params maybe
+						if inputRef, ok := m["input"].(string); ok {
+							op.Params = []map[string]any{{"$ref": inputRef}}
+						}
+					} else {
+						// unknown shape, still include name
+						op.Raw = map[string]any{"value": v}
+					}
+					out = append(out, op)
+				}
+				if len(out) > 0 {
+					return out, nil
+				}
+			}
+		}
+
+		// shape 4: openapi-like
+		if paths, ok := gen["paths"].(map[string]any); ok {
 			for pth, v := range paths {
 				if mm, ok := v.(map[string]any); ok {
 					for method, mv := range mm {
 						mUpper := strings.ToUpper(method)
-						if !httpMethodAllowed(mUpper) {
-							continue
-						}
 						op := Operation{Path: pth, Method: mUpper, Name: deriveOpName(method, pth), Raw: map[string]any{"openapi": mv}}
 						list = append(list, op)
 					}
@@ -302,15 +338,8 @@ func fetchOperations(ctx context.Context, name, baseURL string, cli *webdaclient
 			}
 		}
 	}
-	return nil, errors.New("unable to parse operations specification")
-}
 
-func httpMethodAllowed(m string) bool {
-	switch m {
-	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
-		return true
-	}
-	return false
+	return nil, errors.New("unable to parse operations specification")
 }
 
 var pathVarRegexp = regexp.MustCompile(`[{:]([a-zA-Z0-9_]+)[}]?`)
@@ -437,14 +466,14 @@ func main() {
 	defer cancel()
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() { <-sigCh; cancel() }()
+	go func() { <-sigCh; cancel(); os.Exit(1) }()
 	// Ensure initial token (auth flow) prior to constructing dynamic operations; we keep legacy acquire for interactive auth.
 	_, err = acquireToken(ctx, invoked, baseURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Authentication failed: %v\n", err)
 		os.Exit(1)
 	}
-	cli, err := webdaclient.New(invoked, baseURL)
+	cli, err = webdaclient.New(invoked, baseURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Cannot initialize client: %v\n", err)
 		os.Exit(1)
@@ -466,7 +495,7 @@ func main() {
 		if ti.AccessToken == "" {
 			return errors.New("no access token; run auth")
 		}
-		user, err := fetchCurrentUser(cmd.Context(), baseURL, ti.AccessToken)
+		user, err := fetchCurrentUser(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -475,7 +504,7 @@ func main() {
 		return nil
 	}})
 	root.AddCommand(&cobra.Command{Use: "refresh-operations", Short: "Re-fetch operations spec", RunE: func(cmd *cobra.Command, args []string) error {
-		ops, err := fetchOperations(cmd.Context(), invoked, baseURL, cli)
+		ops, err := fetchOperations(cmd.Context(), invoked)
 		if err != nil {
 			return err
 		}
@@ -483,7 +512,7 @@ func main() {
 		return nil
 	}})
 	// Fetch operations for dynamic commands
-	if ops, err := fetchOperations(ctx, invoked, baseURL, cli); err == nil {
+	if ops, err := fetchOperations(ctx, invoked); err == nil {
 		addDynamicCommands(root, cli, baseURL, ops)
 	} else {
 		// still usable with basic commands

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,16 +23,16 @@ const (
 
 // Client handles authenticated HTTP calls with automatic refresh and background renewal.
 type Client struct {
-	BaseURL     string
-	Name        string
-	tokenPath   string
-	mu          sync.RWMutex
-	Refresh     string
-	Access      string
-	Sequence    string
-	Expiry      time.Time
-	stopCh      chan struct{}
-	refreshedCh chan struct{} // closed & recreated on each successful refresh
+	BaseURL      string
+	Name         string
+	tokenPath    string
+	mu           sync.RWMutex
+	RefreshToken string
+	AccessToken  string
+	Sequence     string
+	Expiry       time.Time
+	stopCh       chan struct{}
+	refreshedCh  chan struct{} // closed & recreated on each successful refresh
 }
 
 // New constructs a client for given logical name (command invocation name) and baseURL.
@@ -38,8 +40,8 @@ type Client struct {
 func New(name, baseURL string) (*Client, error) {
 	c := &Client{BaseURL: strings.TrimRight(baseURL, "/"), Name: name, tokenPath: tokenPath(name), stopCh: make(chan struct{}), refreshedCh: make(chan struct{})}
 	if ti, err := parseTokenFile(c.tokenPath); err == nil {
-		c.Refresh = ti.RefreshToken
-		c.Access = ti.AccessToken
+		c.RefreshToken = ti.RefreshToken
+		c.AccessToken = ti.AccessToken
 		c.Sequence = ti.Sequence
 		// Start with a conservative expiry window so we trigger background refresh before long.
 		c.Expiry = time.Now().Add(defaultTTL)
@@ -51,17 +53,18 @@ func New(name, baseURL string) (*Client, error) {
 // Close stops background activities.
 func (c *Client) Close() { close(c.stopCh) }
 
-// AccessToken returns current access token (read lock).
-func (c *Client) AccessToken() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.Access
+func (c *Client) Request(method, path string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, c.BaseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	return c.Do(req)
 }
 
 // Do executes the request adding Authorization header and performing automatic retry on 401 with refresh.
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	// Ensure we have an access token; if missing but refresh token available, refresh first.
-	if c.AccessToken() == "" && c.Refresh != "" && c.Sequence != "" {
+	if c.AccessToken == "" && c.RefreshToken != "" && c.Sequence != "" {
 		_ = c.refresh(req.Context())
 	}
 	c.attachAuth(req)
@@ -69,7 +72,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusUnauthorized && c.Refresh != "" && c.Sequence != "" {
+	if resp.StatusCode == http.StatusUnauthorized && c.RefreshToken != "" && c.Sequence != "" {
 		resp.Body.Close()
 		if rerr := c.refresh(req.Context()); rerr == nil {
 			// retry once
@@ -82,7 +85,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 }
 
 func (c *Client) attachAuth(req *http.Request) {
-	if at := c.AccessToken(); at != "" {
+	if at := c.AccessToken; at != "" {
 		req.Header.Set("Authorization", "Bearer "+at)
 	}
 }
@@ -91,20 +94,17 @@ func (c *Client) attachAuth(req *http.Request) {
 func (c *Client) refresh(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.Refresh == "" || c.Sequence == "" {
+	if c.RefreshToken == "" || c.Sequence == "" {
 		return errors.New("missing refresh credentials")
 	}
-	at, ttl, err := exchangeTokenWithTTL(ctx, c.BaseURL, c.Refresh, c.Sequence)
+	fmt.Println("Refreshing access_token")
+	err := c.exchangeTokenWithTTL(ctx, c.BaseURL, c.RefreshToken, c.Sequence)
 	if err != nil {
+		fmt.Println("Cannot refresh access_token", err)
 		return err
 	}
-	c.Access = at
-	if ttl == 0 {
-		ttl = defaultTTL
-	}
-	c.Expiry = time.Now().Add(ttl)
 	// Persist updated file (still 3 lines as original format for compatibility).
-	content := c.Refresh + "\n" + c.Access + "\n" + c.Sequence + "\n"
+	content := c.RefreshToken + "\n" + c.AccessToken + "\n" + c.Sequence + "\n"
 	_ = os.WriteFile(c.tokenPath, []byte(content), 0o600)
 	// Cycle channel to wake background loop.
 	close(c.refreshedCh)
@@ -178,27 +178,28 @@ func parseTokenFile(path string) (tokenInfo, error) {
 }
 
 // exchangeTokenWithTTL mirrors the main exchange but attempts to read expires_in if present.
-func exchangeTokenWithTTL(ctx context.Context, baseURL, refresh, sequence string) (string, time.Duration, error) {
-	payload := strings.NewReader("{\"refresh_token\":\"" + refresh + "\",\"sequence\":\"" + sequence + "\"}")
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/auth/refresh", payload)
+func (c *Client) exchangeTokenWithTTL(ctx context.Context, baseURL, refresh, sequence string) error {
+	payload := strings.NewReader("{\"token\":\"" + refresh + "\",\"sequence\":" + sequence + "}")
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, baseURL+"/auth/refresh", payload)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", 0, err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return "", 0, errors.New("refresh failed: " + resp.Status)
+		return errors.New("refresh failed: " + resp.Status)
 	}
 	type respShape struct {
 		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
+		Sequence    int    `json:"sequence"`
 	}
 	var rs respShape
 	dec := json.NewDecoder(resp.Body)
 	if err := dec.Decode(&rs); err != nil {
-		return "", 0, err
+		return err
 	}
-	ttl := time.Duration(rs.ExpiresIn) * time.Second
-	return rs.AccessToken, ttl, nil
+	c.AccessToken = rs.AccessToken
+	c.Sequence = fmt.Sprintf("%d", rs.Sequence)
+	return nil
 }
