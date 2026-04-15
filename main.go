@@ -470,6 +470,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: cannot fetch operations: %v\n", err)
 	}
 
+	// Auto-install shell completion on first launch
+	installShellCompletion(root, invoked)
+
 	// Set up logo display in help
 	if len(logoData) > 0 {
 		originalHelp := root.HelpFunc()
@@ -481,6 +484,129 @@ func main() {
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+const completionMarker = ".completion-installed"
+
+// installShellCompletion auto-detects the user's shell and installs completion
+// scripts on first launch. A marker file prevents re-installation on subsequent runs.
+func installShellCompletion(root *cobra.Command, name string) {
+	markerPath := filepath.Join(configDir(), name+completionMarker)
+	if _, err := os.Stat(markerPath); err == nil {
+		return // already installed
+	}
+
+	shell := detectShell()
+	if shell == "" {
+		return
+	}
+
+	var err error
+	switch shell {
+	case "zsh":
+		err = installZshCompletion(root, name)
+	case "bash":
+		err = installBashCompletion(root, name)
+	case "fish":
+		err = installFishCompletion(root, name)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Note: could not auto-install %s completion: %v\n", shell, err)
+		return
+	}
+
+	// Write marker
+	_ = os.MkdirAll(configDir(), 0o700)
+	_ = os.WriteFile(markerPath, []byte(shell+"\n"), 0o600)
+	fmt.Fprintf(os.Stderr, "Shell completion installed for %s. Restart your shell or run: source ~/.%src to activate.\n", shell, shell)
+}
+
+func detectShell() string {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		return ""
+	}
+	base := filepath.Base(shell)
+	switch base {
+	case "zsh":
+		return "zsh"
+	case "bash":
+		return "bash"
+	case "fish":
+		return "fish"
+	}
+	return ""
+}
+
+func installZshCompletion(root *cobra.Command, name string) error {
+	// Install to ~/.webdacli/completions and add source line to ~/.zshrc
+	compDir := filepath.Join(configDir(), "completions")
+	if err := os.MkdirAll(compDir, 0o700); err != nil {
+		return err
+	}
+	compFile := filepath.Join(compDir, "_"+name)
+	f, err := os.Create(compFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := root.GenZshCompletion(f); err != nil {
+		return err
+	}
+
+	// Add fpath + compinit to .zshrc if not already present
+	zshrc := filepath.Join(userHome(), ".zshrc")
+	sourceLine := fmt.Sprintf("fpath=(%s $fpath); autoload -Uz compinit; compinit -C", compDir)
+	return appendLineIfMissing(zshrc, sourceLine, "webdacli/completions")
+}
+
+func installBashCompletion(root *cobra.Command, name string) error {
+	compDir := filepath.Join(configDir(), "completions")
+	if err := os.MkdirAll(compDir, 0o700); err != nil {
+		return err
+	}
+	compFile := filepath.Join(compDir, name+".bash")
+	f, err := os.Create(compFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := root.GenBashCompletionV2(f, true); err != nil {
+		return err
+	}
+
+	bashrc := filepath.Join(userHome(), ".bashrc")
+	sourceLine := fmt.Sprintf("source %s", compFile)
+	return appendLineIfMissing(bashrc, sourceLine, "webdacli/completions")
+}
+
+func installFishCompletion(root *cobra.Command, name string) error {
+	compDir := filepath.Join(userHome(), ".config", "fish", "completions")
+	if err := os.MkdirAll(compDir, 0o700); err != nil {
+		return err
+	}
+	compFile := filepath.Join(compDir, name+".fish")
+	f, err := os.Create(compFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return root.GenFishCompletion(f, true)
+}
+
+// appendLineIfMissing adds line to file if a marker string is not already present.
+func appendLineIfMissing(filePath, line, marker string) error {
+	data, err := os.ReadFile(filePath)
+	if err == nil && strings.Contains(string(data), marker) {
+		return nil // already configured
+	}
+	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "\n# webda-cli shell completion\n%s\n", line)
+	return err
 }
 
 func mapKeys[K comparable, V any](m map[K]V) []string {
