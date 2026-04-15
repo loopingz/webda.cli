@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/loopingz/webda-cli/tui"
 	"github.com/loopingz/webda-cli/webdaclient"
 	browser "github.com/pkg/browser"
 	"github.com/spf13/cobra"
@@ -256,19 +257,31 @@ func fetchCurrentUser(ctx context.Context) (User, error) {
 	return u, nil
 }
 
-func fetchOperations(ctx context.Context, name string) ([]Operation, error) {
+func fetchOperations(ctx context.Context, name string) ([]Operation, string, error) {
 	resp, err := cli.Request("GET", "/operations", nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("operations fetch failed: %s", resp.Status)
+		return nil, "", fmt.Errorf("operations fetch failed: %s", resp.Status)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	// persist
 	_ = os.WriteFile(opsPath(name), body, 0o600)
-	return parseOperations(body)
+	return parseOperationsResponse(body)
+}
+
+// parseOperationsResponse parses the full /operations response, returning
+// operations and an optional logo URL.
+func parseOperationsResponse(body []byte) ([]Operation, string, error) {
+	var gen map[string]any
+	if err := json.Unmarshal(body, &gen); err == nil {
+		logoURL, _ := gen["logo"].(string)
+		ops, err := parseOperations(body)
+		return ops, logoURL, err
+	}
+	ops, err := parseOperations(body)
+	return ops, "", err
 }
 
 // parseOperations parses the operations specification JSON body into a slice of Operation.
@@ -377,82 +390,6 @@ func buildRootCommand(name, baseURL string) *cobra.Command {
 	return cmd
 }
 
-func addDynamicCommands(root *cobra.Command, cli *webdaclient.Client, baseURL string, ops []Operation) {
-	for _, op := range ops {
-		o := op // copy
-		m := strings.ToUpper(defaultString(o.Method, "GET"))
-		if o.Name == "" {
-			o.Name = deriveOpName(m, o.Path)
-		}
-		c := &cobra.Command{Use: o.Name, Short: o.Description, RunE: func(cmd *cobra.Command, args []string) error {
-			// Build URL
-			path := o.Path
-			// Replace path vars with flags of same name
-			matches := pathVarRegexp.FindAllStringSubmatch(path, -1)
-			for _, mt := range matches {
-				if len(mt) < 2 {
-					continue
-				}
-				vName := mt[1]
-				val, _ := cmd.Flags().GetString(vName)
-				if val == "" {
-					return fmt.Errorf("missing required --%s", vName)
-				}
-				path = strings.ReplaceAll(path, mt[0], val)
-			}
-			url := strings.TrimRight(baseURL, "/") + path
-			data, _ := cmd.Flags().GetString("data")
-			var body io.Reader
-			if data != "" {
-				body = bytes.NewBufferString(data)
-			}
-			req, _ := http.NewRequest(m, url, body)
-			req = req.WithContext(cmd.Context())
-			if data != "" {
-				req.Header.Set("Content-Type", "application/json")
-			}
-			resp, err := cli.Do(req)
-			if err != nil {
-				return err
-			}
-			defer resp.Body.Close()
-			rb, _ := io.ReadAll(resp.Body)
-			format, _ := cmd.Flags().GetString("output")
-			if format == "pretty" && json.Valid(rb) {
-				var out bytes.Buffer
-				if err := json.Indent(&out, rb, "", "  "); err == nil {
-					rb = out.Bytes()
-				}
-			}
-			if resp.StatusCode >= 300 {
-				fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Status)
-			}
-			os.Stdout.Write(rb)
-			if len(rb) == 0 {
-				fmt.Println(resp.Status)
-			}
-			return nil
-		}}
-		// Add flags for path variables
-		matches := pathVarRegexp.FindAllStringSubmatch(o.Path, -1)
-		for _, mt := range matches {
-			if len(mt) >= 2 {
-				c.Flags().String(mt[1], "", "path variable")
-			}
-		}
-		c.Flags().StringP("output", "o", "pretty", "output format: raw|pretty")
-		c.Flags().String("data", "", "JSON body for non-GET requests")
-		root.AddCommand(c)
-	}
-}
-
-func defaultString(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
-}
-
 func main() {
 	invoked := filepath.Base(os.Args[0])
 	// If invoked via 'go run', fallback to first arg after program name as logical name
@@ -513,7 +450,7 @@ func main() {
 		return nil
 	}})
 	root.AddCommand(&cobra.Command{Use: "refresh-operations", Short: "Re-fetch operations spec", RunE: func(cmd *cobra.Command, args []string) error {
-		ops, err := fetchOperations(cmd.Context(), invoked)
+		ops, _, err := fetchOperations(cmd.Context(), invoked)
 		if err != nil {
 			return err
 		}
@@ -521,11 +458,25 @@ func main() {
 		return nil
 	}})
 	// Fetch operations for dynamic commands
-	if ops, err := fetchOperations(ctx, invoked); err == nil {
-		addDynamicCommands(root, cli, baseURL, ops)
+	var logoData []byte
+	if ops, logoURL, err := fetchOperations(ctx, invoked); err == nil {
+		// Fetch and cache logo if URL provided
+		if logoURL != "" {
+			cachePath := tui.LogoCachePath(configDir(), invoked)
+			logoData, _ = tui.FetchAndCacheLogo(logoURL, cachePath)
+		}
+		buildCommandTree(root, cli, baseURL, ops, logoData)
 	} else {
-		// still usable with basic commands
 		fmt.Fprintf(os.Stderr, "Warning: cannot fetch operations: %v\n", err)
+	}
+
+	// Set up logo display in help
+	if len(logoData) > 0 {
+		originalHelp := root.HelpFunc()
+		root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+			tui.RenderLogo(os.Stdout, logoData)
+			originalHelp(cmd, args)
+		})
 	}
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
