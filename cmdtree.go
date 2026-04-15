@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"strings"
 	"unicode"
 
@@ -129,9 +134,89 @@ func addSchemaFlags(cmd *cobra.Command, schema map[string]any) {
 }
 
 // makeOperationRunE creates the RunE function for a leaf operation command.
-// Placeholder — will be filled in Task 4.
+// Collects flag values, optionally shows TUI form, then POSTs to /operations/{id}.
 func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string, logoData []byte) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		return fmt.Errorf("operation %s: execution not yet implemented", op.Name)
+		body, err := collectInput(cmd, op)
+		if err != nil {
+			return err
+		}
+		jsonBody, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		var reader io.Reader
+		if len(body) > 0 {
+			reader = bytes.NewReader(jsonBody)
+		}
+		url := strings.TrimRight(baseURL, "/") + "/operations/" + op.Name
+		req, err := http.NewRequestWithContext(cmd.Context(), http.MethodPost, url, reader)
+		if err != nil {
+			return err
+		}
+		if reader != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		rb, _ := io.ReadAll(resp.Body)
+		format, _ := cmd.Flags().GetString("output")
+		if format == "pretty" && json.Valid(rb) {
+			var out bytes.Buffer
+			if err := json.Indent(&out, rb, "", "  "); err == nil {
+				rb = out.Bytes()
+			}
+		}
+		if resp.StatusCode >= 300 {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Status)
+		}
+		os.Stdout.Write(rb)
+		if len(rb) == 0 {
+			fmt.Println(resp.Status)
+		}
+		return nil
 	}
+}
+
+// collectInput gathers input values from CLI flags based on the operation's input schema.
+// Returns a map of property name → value for all flags that were explicitly set.
+func collectInput(cmd *cobra.Command, op Operation) (map[string]any, error) {
+	body := map[string]any{}
+	if op.Input == nil {
+		return body, nil
+	}
+	props, ok := op.Input["properties"].(map[string]any)
+	if !ok {
+		return body, nil
+	}
+	for name, v := range props {
+		prop, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		flagName := camelToKebab(name)
+		f := cmd.Flags().Lookup(flagName)
+		if f == nil || !f.Changed {
+			continue
+		}
+		typ, _ := prop["type"].(string)
+		switch typ {
+		case "boolean":
+			val, _ := cmd.Flags().GetBool(flagName)
+			body[name] = val
+		case "integer":
+			val, _ := cmd.Flags().GetInt(flagName)
+			body[name] = val
+		case "number":
+			val, _ := cmd.Flags().GetFloat64(flagName)
+			body[name] = val
+		default:
+			val, _ := cmd.Flags().GetString(flagName)
+			body[name] = val
+		}
+	}
+	return body, nil
 }
