@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/loopingz/webda-cli/tui"
 	"github.com/loopingz/webda-cli/webdaclient"
 	"github.com/spf13/cobra"
 )
@@ -137,7 +138,7 @@ func addSchemaFlags(cmd *cobra.Command, schema map[string]any) {
 // Collects flag values, optionally shows TUI form, then POSTs to /operations/{id}.
 func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string, logoData []byte) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		body, err := collectInput(cmd, op)
+		body, err := collectInput(cmd, op, logoData)
 		if err != nil {
 			return err
 		}
@@ -181,9 +182,9 @@ func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string,
 	}
 }
 
-// collectInput gathers input values from CLI flags based on the operation's input schema.
-// Returns a map of property name → value for all flags that were explicitly set.
-func collectInput(cmd *cobra.Command, op Operation) (map[string]any, error) {
+// collectInput gathers input from CLI flags. If required fields are missing
+// (or --interactive is set), launches a TUI form with optional logo display.
+func collectInput(cmd *cobra.Command, op Operation, logoData []byte) (map[string]any, error) {
 	body := map[string]any{}
 	if op.Input == nil {
 		return body, nil
@@ -192,6 +193,8 @@ func collectInput(cmd *cobra.Command, op Operation) (map[string]any, error) {
 	if !ok {
 		return body, nil
 	}
+
+	// Collect values from flags
 	for name, v := range props {
 		prop, ok := v.(map[string]any)
 		if !ok {
@@ -218,5 +221,38 @@ func collectInput(cmd *cobra.Command, op Operation) (map[string]any, error) {
 			body[name] = val
 		}
 	}
+
+	interactive, _ := cmd.Flags().GetBool("interactive")
+	if interactive || hasMissingRequired(op.Input, body) {
+		// Show logo above the form if available
+		tui.RenderLogo(os.Stdout, logoData)
+		fields := tui.SchemaFields(op.Input)
+		form, results := tui.BuildForm(fields, body)
+		if form != nil {
+			if err := form.Run(); err != nil {
+				return nil, err
+			}
+			body = tui.FinalizeResults(results)
+		}
+	}
+
 	return body, nil
+}
+
+// hasMissingRequired checks if any required fields from the schema are missing from body.
+func hasMissingRequired(schema map[string]any, body map[string]any) bool {
+	req, ok := schema["required"].([]any)
+	if !ok {
+		return false
+	}
+	for _, r := range req {
+		name, ok := r.(string)
+		if !ok {
+			continue
+		}
+		if _, exists := body[name]; !exists {
+			return true
+		}
+	}
+	return false
 }
