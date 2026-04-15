@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -39,7 +39,8 @@ type Operation struct {
 	Description string           `json:"description"`
 	Params      []map[string]any `json:"params"`
 	Raw         map[string]any   `json:"-"`
-	// Additional unknown fields captured in Raw
+	Input       map[string]any   `json:"-"` // JSON Schema for operation input
+	Output      map[string]any   `json:"-"` // JSON Schema for operation output
 }
 
 // operationsResponse attempts to map possible shapes.
@@ -143,9 +144,11 @@ func acquireToken(ctx context.Context, name, baseURL string) (string, error) {
 			resultCh <- authResult{Err: err}
 			return
 		}
-		// fetch current user
-		if user, err := fetchCurrentUser(ctx); err == nil {
-			fmt.Printf("Authenticated as user: %s (ID: %s)\n", user.Email, user.UUID)
+		// fetch current user (cli may not be initialized yet during initial auth)
+		if cli != nil {
+			if user, err := fetchCurrentUser(ctx); err == nil {
+				fmt.Printf("Authenticated as user: %s (ID: %s)\n", user.Email, user.UUID)
+			}
 		}
 		// persist all
 		content := refresh + "\n" + access + "\n" + fmt.Sprintf("%d", seq) + "\n"
@@ -304,14 +307,18 @@ func parseOperations(body []byte) ([]Operation, error) {
 						if desc, ok := m["description"].(string); ok {
 							op.Description = desc
 						}
-						// capture the raw map for consumers
 						op.Raw = m
-						// If input references a schema, record it in Params maybe
-						if inputRef, ok := m["input"].(string); ok {
-							op.Params = []map[string]any{{"$ref": inputRef}}
+						// Input can be an inline JSON schema (map) or a string reference
+						switch inp := m["input"].(type) {
+						case map[string]any:
+							op.Input = inp
+						case string:
+							op.Params = []map[string]any{{"$ref": inp}}
+						}
+						if out, ok := m["output"].(map[string]any); ok {
+							op.Output = out
 						}
 					} else {
-						// unknown shape, still include name
 						op.Raw = map[string]any{"value": v}
 					}
 					out = append(out, op)
@@ -354,13 +361,15 @@ func deriveOpName(method, path string) string {
 			continue
 		}
 		p2 := pathVarRegexp.ReplaceAllString(p, "$1")
-		b.WriteString(strings.Title(p2))
+		if len(p2) > 0 {
+			b.WriteString(strings.ToUpper(p2[:1]) + p2[1:])
+		}
 	}
 	return b.String()
 }
 
 func urlQueryEscape(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(s, " ", "%20"), "&", "%26"), "?", "%3F")
+	return url.QueryEscape(s)
 }
 
 func buildRootCommand(name, baseURL string) *cobra.Command {
@@ -530,6 +539,3 @@ func mapKeys[K comparable, V any](m map[K]V) []string {
 	}
 	return out
 }
-
-// Ensure we reference runtime for potential future extensions (avoid unused warning when trimming code paths)
-var _ = runtime.GOOS
