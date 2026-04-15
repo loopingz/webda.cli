@@ -86,6 +86,8 @@ func buildCommandTree(root *cobra.Command, client *webdaclient.Client, baseURL s
 		addSchemaFlags(cmd, o.Input)
 		cmd.Flags().StringP("output", "o", "pretty", "output format: raw|pretty")
 		cmd.Flags().BoolP("interactive", "i", false, "force interactive TUI form")
+		cmd.Flags().String("input", "", "read operation input from a JSON file")
+		cmd.Flags().Bool("generate-cli-skeleton", false, "print a JSON skeleton for the input schema and exit")
 		parent.AddCommand(cmd)
 	}
 }
@@ -134,10 +136,57 @@ func addSchemaFlags(cmd *cobra.Command, schema map[string]any) {
 	}
 }
 
+// generateSkeleton builds a JSON skeleton from a JSON schema's properties.
+func generateSkeleton(schema map[string]any) map[string]any {
+	skeleton := map[string]any{}
+	if schema == nil {
+		return skeleton
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return skeleton
+	}
+	for name, v := range props {
+		prop, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := prop["type"].(string)
+		switch typ {
+		case "boolean":
+			skeleton[name] = false
+		case "integer":
+			skeleton[name] = 0
+		case "number":
+			skeleton[name] = 0.0
+		case "array":
+			skeleton[name] = []any{}
+		case "object":
+			skeleton[name] = map[string]any{}
+		default:
+			// Check for enum — use first value as example
+			if enums, ok := prop["enum"].([]any); ok && len(enums) > 0 {
+				skeleton[name] = enums[0]
+			} else {
+				skeleton[name] = ""
+			}
+		}
+	}
+	return skeleton
+}
+
 // makeOperationRunE creates the RunE function for a leaf operation command.
 // Collects flag values, optionally shows TUI form, then POSTs to /operations/{id}.
 func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string, logoData []byte) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
+		// Handle --generate-cli-skeleton: print and exit
+		if genSkeleton, _ := cmd.Flags().GetBool("generate-cli-skeleton"); genSkeleton {
+			skeleton := generateSkeleton(op.Input)
+			b, _ := json.MarshalIndent(skeleton, "", "  ")
+			fmt.Println(string(b))
+			return nil
+		}
+
 		body, err := collectInput(cmd, op, logoData)
 		if err != nil {
 			return err
@@ -182,10 +231,22 @@ func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string,
 	}
 }
 
-// collectInput gathers input from CLI flags. If required fields are missing
-// (or --interactive is set), launches a TUI form with optional logo display.
+// collectInput gathers input from a JSON file (--input), CLI flags, or TUI form.
+// Priority: file input is loaded first, then flags override, then TUI fills gaps.
 func collectInput(cmd *cobra.Command, op Operation, logoData []byte) (map[string]any, error) {
 	body := map[string]any{}
+
+	// Load from --input file if provided
+	if inputFile, _ := cmd.Flags().GetString("input"); inputFile != "" {
+		data, err := os.ReadFile(inputFile)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read input file: %w", err)
+		}
+		if err := json.Unmarshal(data, &body); err != nil {
+			return nil, fmt.Errorf("invalid JSON in input file: %w", err)
+		}
+	}
+
 	if op.Input == nil {
 		return body, nil
 	}
@@ -194,7 +255,7 @@ func collectInput(cmd *cobra.Command, op Operation, logoData []byte) (map[string
 		return body, nil
 	}
 
-	// Collect values from flags
+	// Collect values from flags (override file values)
 	for name, v := range props {
 		prop, ok := v.(map[string]any)
 		if !ok {

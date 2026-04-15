@@ -73,6 +73,31 @@ lc authorizer-service test-operations -i         # force TUI even with all flags
 lc authorizer-service test-operations --user foo # no TUI, executes directly
 ```
 
+### JSON Skeleton and File Input
+
+Generate a JSON skeleton for an operation's input schema, fill it in, then pass it back:
+
+```bash
+# Generate skeleton
+lc authorizer-service test-operations --generate-cli-skeleton > input.json
+
+# Edit the file with your values
+cat input.json
+{
+  "user": ""
+}
+
+# Run the operation with the file
+lc authorizer-service test-operations --input input.json
+```
+
+Flags override values from the file. The TUI form can fill remaining gaps:
+
+```bash
+# File provides some values, --user overrides, TUI fills the rest
+lc authorizer-service test-operations --input partial.json --user alice -i
+```
+
 ### Refresh operations
 
 ```bash

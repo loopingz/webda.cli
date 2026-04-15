@@ -115,4 +115,58 @@ func TestBuildCommandTree(t *testing.T) {
 	if err != nil || deployCmd == nil {
 		t.Fatalf("expected deploy command, got err=%v", err)
 	}
+
+	// Check --generate-cli-skeleton and --input flags exist
+	if testOpsCmd.Flags().Lookup("generate-cli-skeleton") == nil {
+		t.Fatal("expected --generate-cli-skeleton flag")
+	}
+	if testOpsCmd.Flags().Lookup("input") == nil {
+		t.Fatal("expected --input flag")
+	}
+}
+
+func TestGenerateSkeleton(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"user":   map[string]any{"type": "string"},
+			"count":  map[string]any{"type": "integer"},
+			"score":  map[string]any{"type": "number"},
+			"active": map[string]any{"type": "boolean"},
+			"role":   map[string]any{"type": "string", "enum": []any{"admin", "user"}},
+			"tags":   map[string]any{"type": "array"},
+			"meta":   map[string]any{"type": "object"},
+		},
+	}
+	skeleton := generateSkeleton(schema)
+
+	if skeleton["user"] != "" {
+		t.Errorf("expected empty string for user, got %v", skeleton["user"])
+	}
+	if skeleton["count"] != 0 {
+		t.Errorf("expected 0 for count, got %v", skeleton["count"])
+	}
+	if skeleton["score"] != 0.0 {
+		t.Errorf("expected 0.0 for score, got %v", skeleton["score"])
+	}
+	if skeleton["active"] != false {
+		t.Errorf("expected false for active, got %v", skeleton["active"])
+	}
+	if skeleton["role"] != "admin" {
+		t.Errorf("expected first enum value 'admin' for role, got %v", skeleton["role"])
+	}
+
+	if skeleton["tags"] == nil {
+		t.Error("expected empty slice for tags")
+	}
+	if skeleton["meta"] == nil {
+		t.Error("expected empty map for meta")
+	}
+}
+
+func TestGenerateSkeleton_Nil(t *testing.T) {
+	skeleton := generateSkeleton(nil)
+	if len(skeleton) != 0 {
+		t.Errorf("expected empty skeleton for nil schema, got %v", skeleton)
+	}
 }
