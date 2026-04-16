@@ -183,7 +183,7 @@ func exchangeToken(ctx context.Context, baseURL string, refresh string, sequence
 	if err != nil {
 		return "", 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return "", 0, fmt.Errorf("exchange failed: %s %s", resp.Status, string(body))
@@ -216,7 +216,7 @@ func fetchCurrentUser(ctx context.Context) (User, error) {
 	if err != nil {
 		return u, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return u, fmt.Errorf("/auth/me failed: %s %s", resp.Status, string(body))
@@ -231,7 +231,7 @@ func fetchOperations(ctx context.Context, name string) ([]Operation, string, err
 	if err != nil {
 		return nil, "", err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode >= 300 {
 		return nil, "", fmt.Errorf("operations fetch failed: %s", resp.Status)
 	}
@@ -276,8 +276,7 @@ func parseOperations(body []byte) ([]Operation, error) {
 	var gen map[string]any
 	if err := json.Unmarshal(body, &gen); err == nil {
 		if opsAny, ok := gen["operations"]; ok {
-			switch ops := opsAny.(type) {
-			case map[string]any:
+			if ops, ok := opsAny.(map[string]any); ok {
 				out := make([]Operation, 0, len(ops))
 				// each key is the operation name, value may contain id, input, permission, etc.
 				for key, v := range ops {
@@ -387,12 +386,12 @@ func main() {
 	_, err = acquireToken(ctx, invoked, baseURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Authentication failed: %v\n", err)
-		os.Exit(1)
+		os.Exit(1) //nolint:gocritic
 	}
 	cli, err = webdaclient.New(invoked, baseURL, tokenStore)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Cannot initialize client: %v\n", err)
-		os.Exit(1)
+		os.Exit(1) //nolint:gocritic
 	}
 	defer cli.Close()
 	root := buildRootCommand(invoked, baseURL)
@@ -515,7 +514,7 @@ func installZshCompletion(root *cobra.Command, name string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := root.GenZshCompletion(f); err != nil {
 		return err
 	}
@@ -536,7 +535,7 @@ func installBashCompletion(root *cobra.Command, name string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := root.GenBashCompletionV2(f, true); err != nil {
 		return err
 	}
@@ -556,7 +555,7 @@ func installFishCompletion(root *cobra.Command, name string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return root.GenFishCompletion(f, true)
 }
 
@@ -570,7 +569,7 @@ func appendLineIfMissing(filePath, line, marker string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = fmt.Fprintf(f, "\n# webda-cli shell completion\n%s\n", line)
 	return err
 }
