@@ -81,3 +81,41 @@ func TestParseOperations_Smoke(t *testing.T) {
 		t.Fatalf("expected 1 op, got %d", len(ops))
 	}
 }
+
+// --- parseOperationsResponse tests ---
+
+func TestParseOperationsResponse_WithLogo(t *testing.T) {
+	body := []byte(`{"logo":"https://example.com/logo.png","operations":{"A":{"id":"A"}}}`)
+	ops, logoURL, err := parseOperationsResponse(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if logoURL != "https://example.com/logo.png" {
+		t.Errorf("expected logo URL, got %q", logoURL)
+	}
+	if len(ops) != 1 {
+		t.Errorf("expected 1 op, got %d", len(ops))
+	}
+}
+
+func TestParseOperationsResponse_WithoutLogo(t *testing.T) {
+	body := []byte(`{"operations":{"B":{"id":"B"}}}`)
+	ops, logoURL, err := parseOperationsResponse(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if logoURL != "" {
+		t.Errorf("expected empty logo URL, got %q", logoURL)
+	}
+	if len(ops) != 1 {
+		t.Errorf("expected 1 op, got %d", len(ops))
+	}
+}
+
+func TestParseOperationsResponse_InvalidJSON(t *testing.T) {
+	body := []byte(`{invalid json`)
+	_, _, err := parseOperationsResponse(body)
+	if err == nil {
+		t.Error("expected error for invalid JSON, got nil")
+	}
+}

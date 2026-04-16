@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -168,5 +170,169 @@ func TestGenerateSkeleton_Nil(t *testing.T) {
 	skeleton := generateSkeleton(nil)
 	if len(skeleton) != 0 {
 		t.Errorf("expected empty skeleton for nil schema, got %v", skeleton)
+	}
+}
+
+// --- hasMissingRequired tests ---
+
+func TestHasMissingRequired_MissingField(t *testing.T) {
+	schema := map[string]any{
+		"required": []any{"user", "phone"},
+	}
+	body := map[string]any{"user": "alice"}
+	if !hasMissingRequired(schema, body) {
+		t.Error("expected true when required field is missing from body")
+	}
+}
+
+func TestHasMissingRequired_AllPresent(t *testing.T) {
+	schema := map[string]any{
+		"required": []any{"user", "phone"},
+	}
+	body := map[string]any{"user": "alice", "phone": "123"}
+	if hasMissingRequired(schema, body) {
+		t.Error("expected false when all required fields are present")
+	}
+}
+
+func TestHasMissingRequired_NoRequiredArray(t *testing.T) {
+	schema := map[string]any{
+		"properties": map[string]any{
+			"user": map[string]any{"type": "string"},
+		},
+	}
+	body := map[string]any{}
+	if hasMissingRequired(schema, body) {
+		t.Error("expected false when schema has no required array")
+	}
+}
+
+func TestHasMissingRequired_NilSchema(t *testing.T) {
+	// Should not panic and should return false
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("hasMissingRequired panicked with nil schema: %v", r)
+		}
+	}()
+	// nil map access on "required" key returns nil interface, cast to []any fails → ok = false → returns false
+	var schema map[string]any
+	body := map[string]any{}
+	if hasMissingRequired(schema, body) {
+		t.Error("expected false for nil schema")
+	}
+}
+
+// --- collectInput tests ---
+
+func newTestCommand(op Operation) *cobra.Command {
+	cmd := &cobra.Command{Use: "test", RunE: func(cmd *cobra.Command, args []string) error { return nil }}
+	addSchemaFlags(cmd, op.Input)
+	cmd.Flags().BoolP("interactive", "i", false, "")
+	cmd.Flags().String("input", "", "")
+	cmd.Flags().Bool("generate-cli-skeleton", false, "")
+	cmd.Flags().StringP("output", "o", "pretty", "")
+	return cmd
+}
+
+func TestCollectInput_FileValid(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "input*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	payload := map[string]any{"user": "from-file"}
+	data, _ := json.Marshal(payload)
+	if _, err := f.Write(data); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	f.Close()
+
+	op := Operation{
+		Input: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"user": map[string]any{"type": "string"},
+			},
+		},
+	}
+	cmd := newTestCommand(op)
+	if err := cmd.Flags().Set("input", f.Name()); err != nil {
+		t.Fatalf("failed to set --input flag: %v", err)
+	}
+
+	body, err := collectInput(cmd, op, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if body["user"] != "from-file" {
+		t.Errorf("expected user=from-file, got %v", body["user"])
+	}
+}
+
+func TestCollectInput_FileNotFound(t *testing.T) {
+	op := Operation{Input: map[string]any{"type": "object", "properties": map[string]any{}}}
+	cmd := newTestCommand(op)
+	if err := cmd.Flags().Set("input", "/nonexistent/path/input.json"); err != nil {
+		t.Fatalf("failed to set --input flag: %v", err)
+	}
+	_, err := collectInput(cmd, op, nil)
+	if err == nil {
+		t.Error("expected error for non-existent file, got nil")
+	}
+}
+
+func TestCollectInput_FileInvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "input*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	f.WriteString("not valid json{{{")
+	f.Close()
+
+	op := Operation{Input: map[string]any{"type": "object", "properties": map[string]any{}}}
+	cmd := newTestCommand(op)
+	if err := cmd.Flags().Set("input", f.Name()); err != nil {
+		t.Fatalf("failed to set --input flag: %v", err)
+	}
+	_, err = collectInput(cmd, op, nil)
+	if err == nil {
+		t.Error("expected error for invalid JSON file, got nil")
+	}
+}
+
+func TestCollectInput_FlagOverridesFile(t *testing.T) {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "input*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	payload := map[string]any{"user": "from-file"}
+	data, _ := json.Marshal(payload)
+	f.Write(data)
+	f.Close()
+
+	op := Operation{
+		Input: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"user": map[string]any{"type": "string"},
+			},
+		},
+	}
+	cmd := newTestCommand(op)
+	if err := cmd.Flags().Set("input", f.Name()); err != nil {
+		t.Fatalf("failed to set --input flag: %v", err)
+	}
+	if err := cmd.Flags().Set("user", "from-flag"); err != nil {
+		t.Fatalf("failed to set --user flag: %v", err)
+	}
+
+	body, err := collectInput(cmd, op, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if body["user"] != "from-flag" {
+		t.Errorf("expected flag to override file: got user=%v, want from-flag", body["user"])
 	}
 }
