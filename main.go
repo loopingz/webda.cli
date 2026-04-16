@@ -471,8 +471,8 @@ func main() {
 		case "prompt":
 			fmt.Fprintf(os.Stderr, "Update available (requires %s). Update now? [Y/n] ", serverInfo.CLIVersionRange)
 			var answer string
-			fmt.Scanln(&answer)
-			if answer == "" || strings.ToLower(answer) == "y" || strings.ToLower(answer) == "yes" {
+			_, _ = fmt.Scanln(&answer)
+			if answer == "" || strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes") {
 				if tag, err := updater.Update(downloadURL); err == nil {
 					fmt.Fprintf(os.Stderr, "Updated to %s\n", tag)
 					if err := updater.SelfReExec(); err != nil {
