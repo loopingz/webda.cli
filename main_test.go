@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/loopingz/webda-cli/tokenstore"
+	"github.com/loopingz/webda-cli/webdaclient"
 )
 
 func TestParseOperations_NormalMap(t *testing.T) {
@@ -447,5 +451,178 @@ func TestInstallShellCompletion_UnknownShell(t *testing.T) {
 	marker := filepath.Join(dir, ".webdacli", "testapp.completion-installed")
 	if _, err := os.Stat(marker); err == nil {
 		t.Error("should not write marker for unknown shell")
+	}
+}
+
+// --- Integration tests using mock Webda server ---
+
+func TestExchangeToken_Success(t *testing.T) {
+	srv := newMockWebdaServer()
+	defer srv.Close()
+
+	access, seq, err := exchangeToken(context.Background(), srv.URL, "valid-refresh", 1)
+	if err != nil {
+		t.Fatalf("exchangeToken failed: %v", err)
+	}
+	if access != "mock-access-token" {
+		t.Errorf("expected mock-access-token, got %q", access)
+	}
+	if seq != 2 {
+		t.Errorf("expected seq 2, got %d", seq)
+	}
+}
+
+func TestExchangeToken_Unauthorized(t *testing.T) {
+	srv := newMockWebdaServer()
+	defer srv.Close()
+
+	_, _, err := exchangeToken(context.Background(), srv.URL, "bad-token", 1)
+	if err == nil {
+		t.Fatal("expected error for bad token")
+	}
+}
+
+func TestFetchCurrentUser_Success(t *testing.T) {
+	srv := newMockWebdaServer()
+	defer srv.Close()
+
+	dir := t.TempDir()
+	store := tokenstore.NewMachineStore(dir)
+	// Save a token so the client has auth
+	store.Save("test", tokenstore.TokenInfo{
+		RefreshToken: "rt",
+		AccessToken:  "at",
+		Sequence:     "1",
+	})
+
+	// Set up global cli
+	origCli := cli
+	var err error
+	cli, err = webdaclient.New("test", srv.URL, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cli.Close()
+		cli = origCli
+	}()
+
+	user, err := fetchCurrentUser(context.Background())
+	if err != nil {
+		t.Fatalf("fetchCurrentUser failed: %v", err)
+	}
+	if user.Email != "test@example.com" {
+		t.Errorf("expected test@example.com, got %q", user.Email)
+	}
+	if user.UUID != "user-123" {
+		t.Errorf("expected user-123, got %q", user.UUID)
+	}
+}
+
+func TestFetchCurrentUser_Unauthorized(t *testing.T) {
+	srv := newMockWebdaServer()
+	defer srv.Close()
+
+	dir := t.TempDir()
+	store := tokenstore.NewMachineStore(dir)
+	// No token saved → client has no auth header
+
+	origCli := cli
+	cli, _ = webdaclient.New("test", srv.URL, store)
+	defer func() {
+		cli.Close()
+		cli = origCli
+	}()
+
+	_, err := fetchCurrentUser(context.Background())
+	if err == nil {
+		t.Fatal("expected error when unauthorized")
+	}
+}
+
+func TestFetchOperations_Success(t *testing.T) {
+	srv := newMockWebdaServer()
+	defer srv.Close()
+
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", origHome)
+	os.MkdirAll(filepath.Join(dir, ".webdacli"), 0o700)
+
+	store := tokenstore.NewMachineStore(filepath.Join(dir, ".webdacli"))
+	store.Save("test", tokenstore.TokenInfo{
+		RefreshToken: "rt",
+		AccessToken:  "at",
+		Sequence:     "1",
+	})
+
+	origCli := cli
+	cli, _ = webdaclient.New("test", srv.URL, store)
+	defer func() {
+		cli.Close()
+		cli = origCli
+	}()
+
+	ops, logoURL, err := fetchOperations(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("fetchOperations failed: %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(ops))
+	}
+	if ops[0].Name != "TestService.doWork" {
+		t.Errorf("expected TestService.doWork, got %q", ops[0].Name)
+	}
+	if logoURL != "" {
+		t.Errorf("expected empty logo URL, got %q", logoURL)
+	}
+}
+
+func TestFetchOperations_Unauthorized(t *testing.T) {
+	srv := newMockWebdaServer()
+	defer srv.Close()
+
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", origHome)
+	os.MkdirAll(filepath.Join(dir, ".webdacli"), 0o700)
+
+	store := tokenstore.NewMachineStore(filepath.Join(dir, ".webdacli"))
+	// No token → no auth
+
+	origCli := cli
+	cli, _ = webdaclient.New("test", srv.URL, store)
+	defer func() {
+		cli.Close()
+		cli = origCli
+	}()
+
+	_, _, err := fetchOperations(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error when unauthorized")
+	}
+}
+
+func TestAcquireToken_ExistingToken(t *testing.T) {
+	dir := t.TempDir()
+	store := tokenstore.NewMachineStore(dir)
+	store.Save("test", tokenstore.TokenInfo{
+		RefreshToken: "rt",
+		AccessToken:  "existing-access",
+		Sequence:     "1",
+	})
+
+	origStore := tokenStore
+	tokenStore = store
+	defer func() { tokenStore = origStore }()
+
+	access, err := acquireToken(context.Background(), "test", "https://unused.example.com")
+	if err != nil {
+		t.Fatalf("acquireToken failed: %v", err)
+	}
+	if access != "existing-access" {
+		t.Errorf("expected existing-access, got %q", access)
 	}
 }
