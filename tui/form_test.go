@@ -2,6 +2,139 @@ package tui
 
 import "testing"
 
+func TestBuildForm_SimpleString(t *testing.T) {
+	fields := []FieldDef{
+		{Name: "user", Type: "string", Required: true},
+	}
+	form, results := BuildForm(fields, nil)
+	if form == nil {
+		t.Fatal("expected non-nil form")
+	}
+	if results == nil {
+		t.Fatal("expected non-nil results")
+	}
+}
+
+func TestBuildForm_PrefilledValues(t *testing.T) {
+	fields := []FieldDef{
+		{Name: "user", Type: "string"},
+	}
+	prefilled := map[string]any{"user": "alice"}
+	_, results := BuildForm(fields, prefilled)
+	// After BuildForm, the ptrTo helper should have set up the binding
+	if results == nil {
+		t.Fatal("expected results map")
+	}
+}
+
+func TestBuildForm_Boolean(t *testing.T) {
+	fields := []FieldDef{
+		{Name: "active", Type: "boolean"},
+	}
+	form, results := BuildForm(fields, map[string]any{"active": true})
+	if form == nil {
+		t.Fatal("expected non-nil form")
+	}
+	if results == nil {
+		t.Fatal("expected non-nil results")
+	}
+}
+
+func TestBuildForm_Enum(t *testing.T) {
+	fields := []FieldDef{
+		{Name: "role", Type: "string", Enum: []string{"admin", "user"}},
+	}
+	form, results := BuildForm(fields, nil)
+	if form == nil {
+		t.Fatal("expected non-nil form")
+	}
+	if results == nil {
+		t.Fatal("expected non-nil results")
+	}
+}
+
+func TestBuildForm_Number(t *testing.T) {
+	fields := []FieldDef{
+		{Name: "count", Type: "integer", Required: true},
+		{Name: "score", Type: "number"},
+	}
+	form, _ := BuildForm(fields, nil)
+	if form == nil {
+		t.Fatal("expected non-nil form")
+	}
+}
+
+func TestBuildForm_Password(t *testing.T) {
+	fields := []FieldDef{
+		{Name: "secret", Type: "string", Format: "password"},
+	}
+	form, _ := BuildForm(fields, nil)
+	if form == nil {
+		t.Fatal("expected non-nil form")
+	}
+}
+
+func TestBuildForm_ComplexSchema(t *testing.T) {
+	// More than 5 fields → should create multiple groups
+	fields := []FieldDef{
+		{Name: "a", Type: "string"},
+		{Name: "b", Type: "string"},
+		{Name: "c", Type: "string"},
+		{Name: "d", Type: "string"},
+		{Name: "e", Type: "string"},
+		{Name: "f", Type: "string"},
+	}
+	form, _ := BuildForm(fields, nil)
+	if form == nil {
+		t.Fatal("expected non-nil form for complex schema")
+	}
+}
+
+func TestBuildForm_Empty(t *testing.T) {
+	form, results := BuildForm(nil, nil)
+	if form != nil {
+		t.Fatal("expected nil form for nil fields")
+	}
+	if results == nil {
+		t.Fatal("expected non-nil results even with nil fields")
+	}
+}
+
+func TestFinalizeResults(t *testing.T) {
+	results := map[string]any{}
+
+	// Simulate what ptrTo does
+	s := "hello"
+	results["name"] = "old"
+	results["__ptr_name"] = &s
+
+	b := true
+	results["active"] = false
+	results["__ptr_active"] = &b
+
+	out := FinalizeResults(results)
+	if out["name"] != "hello" {
+		t.Errorf("expected pointer value 'hello', got %v", out["name"])
+	}
+	if out["active"] != true {
+		t.Errorf("expected pointer value true, got %v", out["active"])
+	}
+}
+
+func TestFinalizeResults_NoPointers(t *testing.T) {
+	results := map[string]any{
+		"user": "alice",
+		"age":  25,
+	}
+	out := FinalizeResults(results)
+	if out["user"] != "alice" {
+		t.Errorf("expected 'alice', got %v", out["user"])
+	}
+	if out["age"] != 25 {
+		t.Errorf("expected 25, got %v", out["age"])
+	}
+}
+
 func TestSchemaFields_String(t *testing.T) {
 	schema := map[string]any{
 		"type": "object",
