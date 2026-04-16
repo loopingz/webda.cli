@@ -35,12 +35,12 @@ jobs:
           go-version-file: go.mod
       - name: Run tests
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
-      - name: Upload coverage
+      - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        uses: codecov/codecov-action@v4
         with:
-          name: coverage
-          path: coverage.out
+          files: coverage.out
+          fail_ci_if_error: false
 
   build:
     name: Build

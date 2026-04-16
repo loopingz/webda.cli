@@ -1,5 +1,9 @@
 # webda-cli
 
+[![CI](https://github.com/loopingz/webda-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/loopingz/webda-cli/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/loopingz/webda-cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/loopingz/webda-cli/actions/workflows/codeql.yml)
+[![codecov](https://codecov.io/gh/loopingz/webda-cli/graph/badge.svg)](https://codecov.io/gh/loopingz/webda-cli)
+
 A dynamic CLI client for [Webda](https://webda.io) applications. The binary name determines which remote host it connects to, configured via `~/.webdacli/config.yaml`.
 
 ## Installation
