@@ -1,6 +1,7 @@
 package webdaclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -64,7 +65,11 @@ func (c *Client) Request(method, path string, body io.Reader) (*http.Response, e
 // Do executes the request adding Authorization header and performing automatic retry on 401 with refresh.
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	// Ensure we have an access token; if missing but refresh token available, refresh first.
-	if c.AccessToken == "" && c.RefreshToken != "" && c.Sequence != "" {
+	c.mu.RLock()
+	needsRefresh := c.AccessToken == "" && c.RefreshToken != "" && c.Sequence != ""
+	canRefresh := c.RefreshToken != "" && c.Sequence != ""
+	c.mu.RUnlock()
+	if needsRefresh {
 		_ = c.refresh(req.Context())
 	}
 	c.attachAuth(req)
@@ -72,7 +77,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusUnauthorized && c.RefreshToken != "" && c.Sequence != "" {
+	if resp.StatusCode == http.StatusUnauthorized && canRefresh {
 		resp.Body.Close()
 		if rerr := c.refresh(req.Context()); rerr == nil {
 			// retry once
@@ -85,7 +90,10 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 }
 
 func (c *Client) attachAuth(req *http.Request) {
-	if at := c.AccessToken; at != "" {
+	c.mu.RLock()
+	at := c.AccessToken
+	c.mu.RUnlock()
+	if at != "" {
 		req.Header.Set("Authorization", "Bearer "+at)
 	}
 }
@@ -177,10 +185,17 @@ func parseTokenFile(path string) (tokenInfo, error) {
 	return ti, nil
 }
 
-// exchangeTokenWithTTL mirrors the main exchange but attempts to read expires_in if present.
+// exchangeTokenWithTTL mirrors the main exchange and reads expires_in if present.
 func (c *Client) exchangeTokenWithTTL(ctx context.Context, baseURL, refresh, sequence string) error {
-	payload := strings.NewReader("{\"token\":\"" + refresh + "\",\"sequence\":" + sequence + "}")
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, baseURL+"/auth/refresh", payload)
+	payload := map[string]any{"token": refresh, "sequence": json.Number(sequence)}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, baseURL+"/auth/refresh", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -193,6 +208,7 @@ func (c *Client) exchangeTokenWithTTL(ctx context.Context, baseURL, refresh, seq
 	type respShape struct {
 		AccessToken string `json:"access_token"`
 		Sequence    int    `json:"sequence"`
+		ExpiresIn   int    `json:"expires_in"`
 	}
 	var rs respShape
 	dec := json.NewDecoder(resp.Body)
@@ -201,5 +217,10 @@ func (c *Client) exchangeTokenWithTTL(ctx context.Context, baseURL, refresh, seq
 	}
 	c.AccessToken = rs.AccessToken
 	c.Sequence = fmt.Sprintf("%d", rs.Sequence)
+	if rs.ExpiresIn > 0 {
+		c.Expiry = time.Now().Add(time.Duration(rs.ExpiresIn) * time.Second)
+	} else {
+		c.Expiry = time.Now().Add(defaultTTL)
+	}
 	return nil
 }
