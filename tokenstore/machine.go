@@ -94,6 +94,6 @@ func (s *MachineStore) Save(name string, ti TokenInfo) error {
 }
 
 func (s *MachineStore) Delete(name string) error {
-	os.Remove(s.saltFile(name)) // best-effort
+	_ = os.Remove(s.saltFile(name)) // best-effort
 	return os.Remove(s.tokenFile(name))
 }

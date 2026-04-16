@@ -14,7 +14,7 @@ func TestSSHAgentStore_DeriveKeyAndRoundtrip(t *testing.T) {
 	key := sha256.Sum256(fakeSignature)
 
 	store := &SSHAgentStore{
-		configDir:  dir,
+		configDir: dir,
 		deriveKey: func(name string) ([32]byte, error) { return key, nil },
 	}
 

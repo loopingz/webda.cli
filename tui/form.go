@@ -81,10 +81,7 @@ func BuildForm(fields []FieldDef, prefilled map[string]any) (*huh.Form, map[stri
 
 	var formFields []huh.Field
 	for _, f := range fields {
-		field := buildField(f, results)
-		if field != nil {
-			formFields = append(formFields, field)
-		}
+		formFields = append(formFields, buildField(f, results))
 	}
 
 	if len(formFields) == 0 {

@@ -211,7 +211,7 @@ func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string,
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		rb, _ := io.ReadAll(resp.Body)
 		format, _ := cmd.Flags().GetString("output")
 		if format == "pretty" && json.Valid(rb) {
@@ -223,7 +223,7 @@ func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string,
 		if resp.StatusCode >= 300 {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Status)
 		}
-		os.Stdout.Write(rb)
+		_, _ = os.Stdout.Write(rb)
 		if len(rb) == 0 {
 			fmt.Println(resp.Status)
 		}

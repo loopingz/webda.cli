@@ -39,7 +39,7 @@ func FetchAndCacheLogo(url, cachePath string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("logo fetch failed: %s", resp.Status)
 	}
@@ -61,7 +61,7 @@ func RenderLogo(w io.Writer, data []byte) {
 	b64 := base64.StdEncoding.EncodeToString(data)
 	switch protocol {
 	case "iterm2":
-		fmt.Fprintf(w, "\033]1337;File=inline=1;width=30;preserveAspectRatio=1:%s\a\n", b64)
+		_, _ = fmt.Fprintf(w, "\033]1337;File=inline=1;width=30;preserveAspectRatio=1:%s\a\n", b64)
 	case "kitty":
 		// Kitty protocol: send in chunks of 4096
 		for i := 0; i < len(b64); i += 4096 {
@@ -75,11 +75,11 @@ func RenderLogo(w io.Writer, data []byte) {
 				more = 0
 			}
 			if i == 0 {
-				fmt.Fprintf(w, "\033_Ga=T,f=100,m=%d;%s\033\\", more, chunk)
+				_, _ = fmt.Fprintf(w, "\033_Ga=T,f=100,m=%d;%s\033\\", more, chunk)
 			} else {
-				fmt.Fprintf(w, "\033_Gm=%d;%s\033\\", more, chunk)
+				_, _ = fmt.Fprintf(w, "\033_Gm=%d;%s\033\\", more, chunk)
 			}
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }

@@ -1,6 +1,7 @@
 package tokenstore
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -69,7 +70,7 @@ func TestMachineStore_SaltReuse(t *testing.T) {
 	store.Save("reuse-test", ti)
 
 	salt2, _ := os.ReadFile(filepath.Join(dir, "reuse-test.tok.salt"))
-	if string(salt1) != string(salt2) {
+	if !bytes.Equal(salt1, salt2) {
 		t.Fatal("salt should be reused across saves")
 	}
 

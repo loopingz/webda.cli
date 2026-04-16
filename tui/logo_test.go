@@ -50,7 +50,7 @@ func TestDetectImageProtocol(t *testing.T) {
 
 func TestLogoCachePath(t *testing.T) {
 	got := LogoCachePath("/home/user/.webdacli", "lc")
-	want := filepath.Join("/home/user/.webdacli", "lc.logo")
+	want := "/home/user/.webdacli/lc.logo"
 	if got != want {
 		t.Errorf("LogoCachePath() = %q, want %q", got, want)
 	}
