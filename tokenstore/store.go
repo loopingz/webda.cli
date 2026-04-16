@@ -27,3 +27,21 @@ func UnmarshalTokenInfo(data []byte) (TokenInfo, error) {
 	err := json.Unmarshal(data, &ti)
 	return ti, err
 }
+
+// NewTokenStore returns the best available token storage backend.
+// Priority: system keyring > SSH agent > machine-bound encryption.
+func NewTokenStore(configDir string) TokenStore {
+	// Try keyring
+	ks := &KeyringStore{}
+	if ks.Available() {
+		return ks
+	}
+
+	// Try SSH agent
+	if ss, err := NewSSHAgentStore(configDir); err == nil {
+		return ss
+	}
+
+	// Fallback to machine-bound
+	return NewMachineStore(configDir)
+}
