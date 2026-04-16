@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/loopingz/webda-cli/tokenstore"
 	"github.com/loopingz/webda-cli/tui"
 	"github.com/loopingz/webda-cli/webdaclient"
 	browser "github.com/pkg/browser"
@@ -27,7 +28,6 @@ import (
 const (
 	configDirName  = ".webdacli"
 	configFileName = "config.yaml"
-	tokenExt       = ".tok"
 	opsExt         = ".operations"
 	callbackPort   = 18181
 )
@@ -50,6 +50,7 @@ type operationsResponse struct {
 }
 
 var cli *webdaclient.Client
+var tokenStore tokenstore.TokenStore
 
 func userHome() string {
 	h, _ := os.UserHomeDir()
@@ -71,43 +72,11 @@ func loadConfig() (map[string]string, error) {
 	return m, nil
 }
 
-func tokenPath(name string) string { return filepath.Join(configDir(), name+tokenExt) }
-func opsPath(name string) string   { return filepath.Join(configDir(), name+opsExt) }
-
-// TokenInfo holds refresh/access/sequence values.
-type TokenInfo struct {
-	RefreshToken string
-	AccessToken  string
-	Sequence     string
-}
-
-// TODO Encrypt token file contents on disk.
-func parseTokenFile(path string) (TokenInfo, error) {
-	var ti TokenInfo
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ti, err
-	}
-	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	if len(lines) >= 1 {
-		ti.RefreshToken = strings.TrimSpace(lines[0])
-	}
-	if len(lines) >= 2 {
-		ti.AccessToken = strings.TrimSpace(lines[1])
-	}
-	if len(lines) >= 3 {
-		ti.Sequence = strings.TrimSpace(lines[2])
-	}
-	if ti.RefreshToken == "" || ti.Sequence == "" {
-		return ti, errors.New("invalid token file (missing refresh_token or sequence)")
-	}
-	return ti, nil
-}
+func opsPath(name string) string { return filepath.Join(configDir(), name+opsExt) }
 
 // acquireToken ensures tokens exist, returning the access token (and persisting all values).
 func acquireToken(ctx context.Context, name, baseURL string) (string, error) {
-	p := tokenPath(name)
-	if ti, err := parseTokenFile(p); err == nil && ti.AccessToken != "" {
+	if ti, err := tokenStore.Load(name); err == nil && ti.AccessToken != "" {
 		return ti.AccessToken, nil
 	}
 	if err := os.MkdirAll(configDir(), 0o700); err != nil {
@@ -152,8 +121,8 @@ func acquireToken(ctx context.Context, name, baseURL string) (string, error) {
 			}
 		}
 		// persist all
-		content := refresh + "\n" + access + "\n" + fmt.Sprintf("%d", seq) + "\n"
-		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		ti := tokenstore.TokenInfo{RefreshToken: refresh, AccessToken: access, Sequence: fmt.Sprintf("%d", seq)}
+		if err := tokenStore.Save(name, ti); err != nil {
 			http.Error(w, "cannot persist token", http.StatusInternalServerError)
 			resultCh <- authResult{Err: err}
 			return
@@ -408,6 +377,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Command name '%s' not found in config. Available: %s\n", invoked, strings.Join(mapKeys(cfg), ", "))
 		os.Exit(1)
 	}
+	tokenStore = tokenstore.NewTokenStore(configDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sigCh := make(chan os.Signal, 2)
@@ -429,16 +399,12 @@ func main() {
 	root.PersistentFlags().Duration("timeout", 30*time.Second, "request timeout")
 	root.AddCommand(&cobra.Command{Use: "auth", Short: "Re-run authentication flow", RunE: func(cmd *cobra.Command, args []string) error {
 		// Delete token and reacquire
-		_ = os.Remove(tokenPath(invoked))
+		_ = tokenStore.Delete(invoked)
 		_, err := acquireToken(ctx, invoked, baseURL)
 		return err
 	}})
 	root.AddCommand(&cobra.Command{Use: "whoami", Short: "Show current user info", RunE: func(cmd *cobra.Command, args []string) error {
-		ti, err := parseTokenFile(tokenPath(invoked))
-		if err != nil {
-			return err
-		}
-		if ti.AccessToken == "" {
+		if _, err := tokenStore.Load(invoked); err != nil {
 			return errors.New("no access token; run auth")
 		}
 		user, err := fetchCurrentUser(cmd.Context())
