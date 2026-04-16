@@ -19,6 +19,7 @@ import (
 
 	"github.com/loopingz/webda-cli/tokenstore"
 	"github.com/loopingz/webda-cli/tui"
+	"github.com/loopingz/webda-cli/updater"
 	"github.com/loopingz/webda-cli/webdaclient"
 	browser "github.com/pkg/browser"
 	"github.com/spf13/cobra"
@@ -449,7 +450,54 @@ func main() {
 	} else {
 		fmt.Fprintf(os.Stderr, "Warning: cannot fetch operations: %v\n", err)
 	}
-	_ = serverInfo
+	// Check if CLI version satisfies server requirement
+	if needs, _ := updater.NeedsUpdate(version, serverInfo.CLIVersionRange); needs {
+		updateMode := cfg["update"]
+		if updateMode == "" {
+			updateMode = "silent"
+		}
+		downloadURL := serverInfo.CLIDownloadURL
+		switch updateMode {
+		case "silent":
+			if tag, err := updater.Update(downloadURL); err == nil {
+				fmt.Fprintf(os.Stderr, "Updated to %s\n", tag)
+				if err := updater.SelfReExec(); err != nil {
+					fmt.Fprintf(os.Stderr, "Re-exec failed: %v. Please re-run the command.\n", err)
+					os.Exit(0) //nolint:gocritic
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: auto-update failed: %v\n", err)
+			}
+		case "prompt":
+			fmt.Fprintf(os.Stderr, "Update available (requires %s). Update now? [Y/n] ", serverInfo.CLIVersionRange)
+			var answer string
+			fmt.Scanln(&answer)
+			if answer == "" || strings.ToLower(answer) == "y" || strings.ToLower(answer) == "yes" {
+				if tag, err := updater.Update(downloadURL); err == nil {
+					fmt.Fprintf(os.Stderr, "Updated to %s\n", tag)
+					if err := updater.SelfReExec(); err != nil {
+						fmt.Fprintf(os.Stderr, "Re-exec failed: %v. Please re-run the command.\n", err)
+						os.Exit(0) //nolint:gocritic
+					}
+				} else {
+					fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+				}
+			}
+		case "warn":
+			fmt.Fprintf(os.Stderr, "Warning: CLI version %s is outdated (server requires %s). Run '%s update' to upgrade.\n", version, serverInfo.CLIVersionRange, invoked)
+		}
+	}
+
+	root.AddCommand(newVersionCmd(baseURL, &serverInfo))
+	root.AddCommand(&cobra.Command{Use: "update", Short: "Update CLI to latest version", RunE: func(cmd *cobra.Command, args []string) error {
+		downloadURL := serverInfo.CLIDownloadURL
+		tag, err := updater.Update(downloadURL)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Updated to %s\n", tag)
+		return nil
+	}})
 
 	// Auto-install shell completion on first launch
 	installShellCompletion(root, invoked)
