@@ -17,3 +17,19 @@ func TestFormatVersion_Dev(t *testing.T) {
 		t.Errorf("formatVersion = %q, want %q", got, want)
 	}
 }
+
+func TestNewVersionCmd_LocalOnly(t *testing.T) {
+	info := ServerInfo{}
+	cmd := newVersionCmd("https://example.com", &info)
+	if cmd.Use != "version" {
+		t.Errorf("expected Use 'version', got %q", cmd.Use)
+	}
+}
+
+func TestNewVersionCmd_WithServerVersion(t *testing.T) {
+	info := ServerInfo{ServerVersion: "2.1.0"}
+	cmd := newVersionCmd("https://example.com", &info)
+	if cmd.Use != "version" {
+		t.Errorf("expected Use 'version', got %q", cmd.Use)
+	}
+}

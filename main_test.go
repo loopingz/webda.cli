@@ -606,6 +606,48 @@ func TestFetchOperations_Unauthorized(t *testing.T) {
 	}
 }
 
+func TestParseOperationsResponse_WithServerInfo(t *testing.T) {
+	body := []byte(`{
+		"operations": {"TestOp": {"id": "TestOp"}},
+		"version": "2.1.0",
+		"logo": "https://example.com/logo.png",
+		"cli": {
+			"version_range": ">=1.2.0",
+			"download_url": "https://example.com/releases"
+		}
+	}`)
+	ops, info, err := parseOperationsResponse(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("expected 1 op, got %d", len(ops))
+	}
+	if info.ServerVersion != "2.1.0" {
+		t.Errorf("expected server version 2.1.0, got %q", info.ServerVersion)
+	}
+	if info.LogoURL != "https://example.com/logo.png" {
+		t.Errorf("expected logo URL, got %q", info.LogoURL)
+	}
+	if info.CLIVersionRange != ">=1.2.0" {
+		t.Errorf("expected version range >=1.2.0, got %q", info.CLIVersionRange)
+	}
+	if info.CLIDownloadURL != "https://example.com/releases" {
+		t.Errorf("expected download URL, got %q", info.CLIDownloadURL)
+	}
+}
+
+func TestParseOperationsResponse_NoCLIField(t *testing.T) {
+	body := []byte(`{"operations": {"TestOp": {"id": "TestOp"}}}`)
+	_, info, err := parseOperationsResponse(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.CLIVersionRange != "" {
+		t.Errorf("expected empty version range, got %q", info.CLIVersionRange)
+	}
+}
+
 func TestAcquireToken_ExistingToken(t *testing.T) {
 	dir := t.TempDir()
 	store := tokenstore.NewMachineStore(dir)
