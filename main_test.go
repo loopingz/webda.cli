@@ -303,3 +303,149 @@ func TestAppendLineIfMissing_AlreadyPresent(t *testing.T) {
 		t.Error("should not append when marker already present")
 	}
 }
+
+func TestOpsPath(t *testing.T) {
+	// opsPath depends on configDir which depends on HOME
+	orig := os.Getenv("HOME")
+	os.Setenv("HOME", "/fakehome")
+	defer os.Setenv("HOME", orig)
+
+	got := opsPath("myapp")
+	want := "/fakehome/.webdacli/myapp.operations"
+	if got != want {
+		t.Errorf("opsPath = %q, want %q", got, want)
+	}
+}
+
+func TestInstallShellCompletion_Zsh(t *testing.T) {
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	origShell := os.Getenv("SHELL")
+	os.Setenv("HOME", dir)
+	os.Setenv("SHELL", "/bin/zsh")
+	defer func() {
+		os.Setenv("HOME", origHome)
+		os.Setenv("SHELL", origShell)
+	}()
+
+	// Create config dir
+	os.MkdirAll(filepath.Join(dir, ".webdacli"), 0o700)
+
+	root := buildRootCommand("testapp", "https://example.com")
+	installShellCompletion(root, "testapp")
+
+	// Check completion file was created
+	compFile := filepath.Join(dir, ".webdacli", "completions", "_testapp")
+	if _, err := os.Stat(compFile); err != nil {
+		t.Fatalf("expected completion file: %v", err)
+	}
+
+	// Check marker was written
+	marker := filepath.Join(dir, ".webdacli", "testapp.completion-installed")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected marker file: %v", err)
+	}
+
+	// Check .zshrc was updated
+	zshrc, _ := os.ReadFile(filepath.Join(dir, ".zshrc"))
+	if !strings.Contains(string(zshrc), "webdacli/completions") {
+		t.Error("expected .zshrc to contain completions fpath")
+	}
+}
+
+func TestInstallShellCompletion_Bash(t *testing.T) {
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	origShell := os.Getenv("SHELL")
+	os.Setenv("HOME", dir)
+	os.Setenv("SHELL", "/bin/bash")
+	defer func() {
+		os.Setenv("HOME", origHome)
+		os.Setenv("SHELL", origShell)
+	}()
+
+	os.MkdirAll(filepath.Join(dir, ".webdacli"), 0o700)
+
+	root := buildRootCommand("testapp", "https://example.com")
+	installShellCompletion(root, "testapp")
+
+	compFile := filepath.Join(dir, ".webdacli", "completions", "testapp.bash")
+	if _, err := os.Stat(compFile); err != nil {
+		t.Fatalf("expected bash completion file: %v", err)
+	}
+
+	bashrc, _ := os.ReadFile(filepath.Join(dir, ".bashrc"))
+	if !strings.Contains(string(bashrc), "webdacli/completions") {
+		t.Error("expected .bashrc to contain source line")
+	}
+}
+
+func TestInstallShellCompletion_Fish(t *testing.T) {
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	origShell := os.Getenv("SHELL")
+	os.Setenv("HOME", dir)
+	os.Setenv("SHELL", "/usr/local/bin/fish")
+	defer func() {
+		os.Setenv("HOME", origHome)
+		os.Setenv("SHELL", origShell)
+	}()
+
+	os.MkdirAll(filepath.Join(dir, ".webdacli"), 0o700)
+
+	root := buildRootCommand("testapp", "https://example.com")
+	installShellCompletion(root, "testapp")
+
+	compFile := filepath.Join(dir, ".config", "fish", "completions", "testapp.fish")
+	if _, err := os.Stat(compFile); err != nil {
+		t.Fatalf("expected fish completion file: %v", err)
+	}
+}
+
+func TestInstallShellCompletion_AlreadyInstalled(t *testing.T) {
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	origShell := os.Getenv("SHELL")
+	os.Setenv("HOME", dir)
+	os.Setenv("SHELL", "/bin/zsh")
+	defer func() {
+		os.Setenv("HOME", origHome)
+		os.Setenv("SHELL", origShell)
+	}()
+
+	configDir := filepath.Join(dir, ".webdacli")
+	os.MkdirAll(configDir, 0o700)
+	// Write marker to simulate already installed
+	os.WriteFile(filepath.Join(configDir, "testapp.completion-installed"), []byte("zsh\n"), 0o600)
+
+	root := buildRootCommand("testapp", "https://example.com")
+	installShellCompletion(root, "testapp")
+
+	// .zshrc should NOT exist (completion was skipped)
+	if _, err := os.Stat(filepath.Join(dir, ".zshrc")); err == nil {
+		t.Error("should not have written .zshrc when already installed")
+	}
+}
+
+func TestInstallShellCompletion_UnknownShell(t *testing.T) {
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	origShell := os.Getenv("SHELL")
+	os.Setenv("HOME", dir)
+	os.Setenv("SHELL", "/bin/csh")
+	defer func() {
+		os.Setenv("HOME", origHome)
+		os.Setenv("SHELL", origShell)
+	}()
+
+	os.MkdirAll(filepath.Join(dir, ".webdacli"), 0o700)
+
+	root := buildRootCommand("testapp", "https://example.com")
+	installShellCompletion(root, "testapp")
+
+	// No marker should be written for unknown shell
+	marker := filepath.Join(dir, ".webdacli", "testapp.completion-installed")
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("should not write marker for unknown shell")
+	}
+}
