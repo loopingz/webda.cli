@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/loopingz/webda.cli/compare/v1.0.0...v1.1.0) (2026-04-16)
+
+
+### Features
+
+* auto-update system ([b70b213](https://github.com/loopingz/webda.cli/commit/b70b213859818f75507536fc5f2538833ba9b6f8))
+
 ## 1.0.0 (2026-04-16)
 
 
