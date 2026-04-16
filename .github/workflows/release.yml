@@ -35,11 +35,16 @@ jobs:
           go-version-file: go.mod
       - name: Build binaries
         run: |
+          TAG="${{ needs.release-please.outputs.tag_name }}"
+          VERSION="${TAG#v}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%d)"
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${DATE}"
           for GOOS in linux darwin windows; do
             for GOARCH in amd64 arm64; do
               ext=""
               if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
-              GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="-s -w" -o "webda-cli-${GOOS}-${GOARCH}${ext}" .
+              GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="${LDFLAGS}" -o "webda-cli-${GOOS}-${GOARCH}${ext}" .
             done
           done
       - name: Upload release assets
