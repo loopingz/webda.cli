@@ -15,14 +15,14 @@ go install github.com/loopingz/webda-cli@latest
 Or build from source:
 
 ```bash
-go build -o lc .
-cp lc /usr/local/bin/lc
+go build -o myapp .
+cp myapp /usr/local/bin/myapp
 ```
 
 Create symlinks for each remote host you want to connect to — the binary name maps to the config key:
 
 ```bash
-ln -s /usr/local/bin/lc /usr/local/bin/oc
+ln -s /usr/local/bin/myapp /usr/local/bin/mystaging
 ```
 
 ## Configuration
@@ -30,21 +30,21 @@ ln -s /usr/local/bin/lc /usr/local/bin/oc
 Create `~/.webdacli/config.yaml` with your host mappings:
 
 ```yaml
-lc: https://app.example.com
-oc: https://staging.example.com
+myapp: https://app.example.com
+mystaging: https://staging.example.com
 wlocal: http://localhost:18080
 ```
 
-Each key is a command name. When you run `lc`, it connects to `https://app.example.com`.
+Each key is a command name. When you run `myapp`, it connects to `https://app.example.com`.
 
 ## Authentication
 
 On first run, the CLI opens a browser for authentication. The token is stored in `~/.webdacli/<name>.tok` and automatically refreshed in the background.
 
 ```bash
-lc              # opens browser for auth on first run
-lc auth         # re-authenticate
-lc whoami       # show current user info
+myapp              # opens browser for auth on first run
+myapp auth         # re-authenticate
+myapp whoami       # show current user info
 ```
 
 ## Operations
@@ -53,9 +53,9 @@ The CLI fetches available operations from the remote host (`GET /operations`) an
 
 | Operation | Command |
 |---|---|
-| `AuthorizerService.testOperations` | `lc authorizer-service test-operations` |
-| `MFA.SMS` | `lc mfa sms` |
-| `Sync.AWS` | `lc sync aws` |
+| `AuthorizerService.testOperations` | `myapp authorizer-service test-operations` |
+| `MFA.SMS` | `myapp mfa sms` |
+| `Sync.AWS` | `myapp sync aws` |
 
 Operations are invoked via `POST /operations/<operationId>`.
 
@@ -64,7 +64,7 @@ Operations are invoked via `POST /operations/<operationId>`.
 If an operation defines an `input` JSON schema, flags are generated automatically:
 
 ```bash
-lc authorizer-service test-operations --user alice
+myapp authorizer-service test-operations --user alice
 ```
 
 ### Interactive TUI
@@ -72,9 +72,9 @@ lc authorizer-service test-operations --user alice
 When required fields are missing, an interactive TUI form is displayed to collect input. You can also force the form with `--interactive` / `-i`:
 
 ```bash
-lc authorizer-service test-operations           # TUI triggers (--user is required)
-lc authorizer-service test-operations -i         # force TUI even with all flags
-lc authorizer-service test-operations --user foo # no TUI, executes directly
+myapp authorizer-service test-operations           # TUI triggers (--user is required)
+myapp authorizer-service test-operations -i         # force TUI even with all flags
+myapp authorizer-service test-operations --user foo # no TUI, executes directly
 ```
 
 ### JSON Skeleton and File Input
@@ -83,7 +83,7 @@ Generate a JSON skeleton for an operation's input schema, fill it in, then pass 
 
 ```bash
 # Generate skeleton
-lc authorizer-service test-operations --generate-cli-skeleton > input.json
+myapp authorizer-service test-operations --generate-cli-skeleton > input.json
 
 # Edit the file with your values
 cat input.json
@@ -92,20 +92,20 @@ cat input.json
 }
 
 # Run the operation with the file
-lc authorizer-service test-operations --input input.json
+myapp authorizer-service test-operations --input input.json
 ```
 
 Flags override values from the file. The TUI form can fill remaining gaps:
 
 ```bash
 # File provides some values, --user overrides, TUI fills the rest
-lc authorizer-service test-operations --input partial.json --user alice -i
+myapp authorizer-service test-operations --input partial.json --user alice -i
 ```
 
 ### Refresh operations
 
 ```bash
-lc refresh-operations    # re-fetch operations from the server
+myapp refresh-operations    # re-fetch operations from the server
 ```
 
 ## Shell Completion
@@ -121,9 +121,9 @@ After the first launch, restart your shell (or `source ~/.zshrc`) to activate co
 To manually regenerate:
 
 ```bash
-lc completion zsh > ~/.webdacli/completions/_lc
-lc completion bash > ~/.webdacli/completions/lc.bash
-lc completion fish > ~/.config/fish/completions/lc.fish
+myapp completion zsh > ~/.webdacli/completions/_myapp
+myapp completion bash > ~/.webdacli/completions/myapp.bash
+myapp completion fish > ~/.config/fish/completions/myapp.fish
 ```
 
 ## Logo
