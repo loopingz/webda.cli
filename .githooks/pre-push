@@ -4,6 +4,9 @@
 
 set -e
 
+# Ensure go and tools are on PATH
+export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
+
 echo "Running go vet..."
 go vet ./...
 
