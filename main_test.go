@@ -648,6 +648,30 @@ func TestParseOperationsResponse_NoCLIField(t *testing.T) {
 	}
 }
 
+func TestParseOperationsResponse_AllMetadataOptional(t *testing.T) {
+	// Server returns only operations — no logo, version, or cli fields
+	body := []byte(`{"operations": {"Op1": {"id": "Op1"}, "Op2": {"id": "Op2"}}}`)
+	ops, info, err := parseOperationsResponse(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("expected 2 ops, got %d", len(ops))
+	}
+	if info.LogoURL != "" {
+		t.Errorf("expected empty LogoURL, got %q", info.LogoURL)
+	}
+	if info.ServerVersion != "" {
+		t.Errorf("expected empty ServerVersion, got %q", info.ServerVersion)
+	}
+	if info.CLIVersionRange != "" {
+		t.Errorf("expected empty CLIVersionRange, got %q", info.CLIVersionRange)
+	}
+	if info.CLIDownloadURL != "" {
+		t.Errorf("expected empty CLIDownloadURL, got %q", info.CLIDownloadURL)
+	}
+}
+
 func TestAcquireToken_ExistingToken(t *testing.T) {
 	dir := t.TempDir()
 	store := tokenstore.NewMachineStore(dir)
