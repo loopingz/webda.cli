@@ -16,7 +16,7 @@ func (s *KeyringStore) Available() bool {
 	if err := keyring.Set(serviceName, probe, "test"); err != nil {
 		return false
 	}
-	keyring.Delete(serviceName, probe)
+	_ = keyring.Delete(serviceName, probe)
 	return true
 }
 

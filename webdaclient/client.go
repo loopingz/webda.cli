@@ -76,7 +76,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized && canRefresh {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if rerr := c.refresh(req.Context()); rerr == nil {
 			// retry once
 			req2 := req.Clone(req.Context())
@@ -165,7 +165,7 @@ func (c *Client) exchangeTokenWithTTL(ctx context.Context, baseURL, refresh, seq
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return errors.New("refresh failed: " + resp.Status)
 	}

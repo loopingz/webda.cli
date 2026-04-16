@@ -37,7 +37,7 @@ func (s *SSHAgentStore) getAgentKey() (ssh.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to ssh agent: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	ag := agent.NewClient(conn)
 	keys, err := ag.List()
 	if err != nil {
@@ -55,7 +55,7 @@ func (s *SSHAgentStore) deriveKeyFromAgent(name string) ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	ag := agent.NewClient(conn)
 	keys, err := ag.List()
 	if err != nil || len(keys) == 0 {
