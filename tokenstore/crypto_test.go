@@ -52,3 +52,19 @@ func TestEncryptInvalidKeyLength(t *testing.T) {
 		t.Fatal("expected error for invalid key length")
 	}
 }
+
+func TestDecryptTooShort(t *testing.T) {
+	key := make([]byte, 32)
+	rand.Read(key)
+	_, err := Decrypt(key, []byte("short"))
+	if err == nil {
+		t.Fatal("expected error for too-short ciphertext")
+	}
+}
+
+func TestDecryptInvalidKeyLength(t *testing.T) {
+	_, err := Decrypt([]byte("short"), []byte("some data that is long enough"))
+	if err == nil {
+		t.Fatal("expected error for invalid key length")
+	}
+}

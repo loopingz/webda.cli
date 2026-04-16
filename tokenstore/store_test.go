@@ -39,3 +39,25 @@ func TestMarshalUnmarshalTokenInfo(t *testing.T) {
 		t.Fatalf("roundtrip failed: got %+v, want %+v", loaded, ti)
 	}
 }
+
+func TestUnmarshalTokenInfo_Invalid(t *testing.T) {
+	_, err := UnmarshalTokenInfo([]byte("not json"))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestMarshalTokenInfo_Roundtrip(t *testing.T) {
+	ti := TokenInfo{RefreshToken: "", AccessToken: "", Sequence: ""}
+	data, err := MarshalTokenInfo(ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := UnmarshalTokenInfo(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded != ti {
+		t.Fatalf("empty roundtrip failed: got %+v", loaded)
+	}
+}

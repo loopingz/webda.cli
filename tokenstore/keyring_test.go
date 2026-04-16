@@ -57,3 +57,22 @@ func TestKeyringStore_Available(t *testing.T) {
 		t.Fatal("expected mock keyring to be available")
 	}
 }
+
+func TestKeyringStore_SaveLoadOverwrite(t *testing.T) {
+	keyring.MockInit()
+	store := &KeyringStore{}
+
+	ti := TokenInfo{RefreshToken: "r1", AccessToken: "a1", Sequence: "1"}
+	store.Save("overwrite-test", ti)
+
+	ti2 := TokenInfo{RefreshToken: "r2", AccessToken: "a2", Sequence: "2"}
+	store.Save("overwrite-test", ti2)
+
+	loaded, err := store.Load("overwrite-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.RefreshToken != "r2" {
+		t.Fatalf("expected overwritten value, got %+v", loaded)
+	}
+}

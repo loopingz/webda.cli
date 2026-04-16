@@ -78,3 +78,30 @@ func TestMachineStore_SaltReuse(t *testing.T) {
 		t.Fatalf("expected updated token, got %+v", loaded)
 	}
 }
+
+func TestMachineStore_LoadNonexistent(t *testing.T) {
+	dir := t.TempDir()
+	store := NewMachineStore(dir)
+	_, err := store.Load("nonexistent")
+	if err == nil {
+		t.Fatal("expected error loading nonexistent token")
+	}
+}
+
+func TestMachineStore_DeriveKeyConsistent(t *testing.T) {
+	dir := t.TempDir()
+	store := NewMachineStore(dir)
+
+	// Save creates the salt
+	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Sequence: "1"}
+	store.Save("consistent-test", ti)
+
+	// Load uses the same salt → should work
+	loaded, err := store.Load("consistent-test")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.RefreshToken != "r" {
+		t.Fatalf("unexpected: %+v", loaded)
+	}
+}
