@@ -1,0 +1,36 @@
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - typecheck
+    - gocritic
+    - gofmt
+    - goimports
+    - misspell
+    - nilerr
+    - prealloc
+    - unconvert
+    - unparam
+
+linters-settings:
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+    disabled-checks:
+      - hugeParam
+  goimports:
+    local-prefixes: github.com/loopingz/webda-cli
+  misspell:
+    locale: US
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - unparam
