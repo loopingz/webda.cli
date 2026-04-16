@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -334,5 +335,63 @@ func TestCollectInput_FlagOverridesFile(t *testing.T) {
 	}
 	if body["user"] != "from-flag" {
 		t.Errorf("expected flag to override file: got user=%v, want from-flag", body["user"])
+	}
+}
+
+func TestAddSchemaFlags_IntegerAndNumber(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"count":   map[string]any{"type": "integer", "description": "item count"},
+			"score":   map[string]any{"type": "number"},
+			"enabled": map[string]any{"type": "boolean"},
+		},
+		"required": []any{"count"},
+	}
+	addSchemaFlags(cmd, schema)
+
+	f := cmd.Flags().Lookup("count")
+	if f == nil {
+		t.Fatal("expected --count flag")
+	}
+	if !strings.Contains(f.Usage, "(required)") {
+		t.Error("expected (required) in usage")
+	}
+
+	if cmd.Flags().Lookup("score") == nil {
+		t.Fatal("expected --score flag")
+	}
+	if cmd.Flags().Lookup("enabled") == nil {
+		t.Fatal("expected --enabled flag")
+	}
+}
+
+func TestAddSchemaFlags_NilSchema(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	addSchemaFlags(cmd, nil)
+	// Should not panic, no flags added
+}
+
+func TestAddSchemaFlags_NoProperties(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	addSchemaFlags(cmd, map[string]any{"type": "object"})
+	// Should not panic, no flags added
+}
+
+func TestGenerateSkeleton_ObjectAndArray(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"nested": map[string]any{"type": "object"},
+			"items":  map[string]any{"type": "array"},
+		},
+	}
+	skeleton := generateSkeleton(schema)
+	if skeleton["nested"] == nil {
+		t.Error("expected empty map for nested object")
+	}
+	if skeleton["items"] == nil {
+		t.Error("expected empty slice for array")
 	}
 }
