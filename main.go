@@ -389,7 +389,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Authentication failed: %v\n", err)
 		os.Exit(1)
 	}
-	cli, err = webdaclient.New(invoked, baseURL)
+	cli, err = webdaclient.New(invoked, baseURL, tokenStore)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Cannot initialize client: %v\n", err)
 		os.Exit(1)

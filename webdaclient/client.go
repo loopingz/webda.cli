@@ -8,16 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/loopingz/webda-cli/tokenstore"
 )
 
 const (
-	configDirName = ".webdacli"
-	tokenExt      = ".tok"
 	// defaultTTL is used when the refresh response does not carry an explicit expiry.
 	defaultTTL = 15 * time.Minute
 )
@@ -26,7 +24,7 @@ const (
 type Client struct {
 	BaseURL      string
 	Name         string
-	tokenPath    string
+	store        tokenstore.TokenStore
 	mu           sync.RWMutex
 	RefreshToken string
 	AccessToken  string
@@ -37,10 +35,10 @@ type Client struct {
 }
 
 // New constructs a client for given logical name (command invocation name) and baseURL.
-// It loads existing token information from disk if present.
-func New(name, baseURL string) (*Client, error) {
-	c := &Client{BaseURL: strings.TrimRight(baseURL, "/"), Name: name, tokenPath: tokenPath(name), stopCh: make(chan struct{}), refreshedCh: make(chan struct{})}
-	if ti, err := parseTokenFile(c.tokenPath); err == nil {
+// It loads existing token information from the provided TokenStore if present.
+func New(name, baseURL string, store tokenstore.TokenStore) (*Client, error) {
+	c := &Client{BaseURL: strings.TrimRight(baseURL, "/"), Name: name, store: store, stopCh: make(chan struct{}), refreshedCh: make(chan struct{})}
+	if ti, err := store.Load(name); err == nil {
 		c.RefreshToken = ti.RefreshToken
 		c.AccessToken = ti.AccessToken
 		c.Sequence = ti.Sequence
@@ -111,9 +109,9 @@ func (c *Client) refresh(ctx context.Context) error {
 		fmt.Println("Cannot refresh access_token", err)
 		return err
 	}
-	// Persist updated file (still 3 lines as original format for compatibility).
-	content := c.RefreshToken + "\n" + c.AccessToken + "\n" + c.Sequence + "\n"
-	_ = os.WriteFile(c.tokenPath, []byte(content), 0o600)
+	// Persist updated tokens via store.
+	ti := tokenstore.TokenInfo{RefreshToken: c.RefreshToken, AccessToken: c.AccessToken, Sequence: c.Sequence}
+	_ = c.store.Save(c.Name, ti)
 	// Cycle channel to wake background loop.
 	close(c.refreshedCh)
 	c.refreshedCh = make(chan struct{})
@@ -149,40 +147,6 @@ func (c *Client) backgroundLoop() {
 			_ = c.refresh(context.Background())
 		}
 	}
-}
-
-// ---- helpers (duplicated minimal versions to keep library self-contained) ----
-
-func userHome() string             { h, _ := os.UserHomeDir(); return h }
-func configDir() string            { return filepath.Join(userHome(), configDirName) }
-func tokenPath(name string) string { return filepath.Join(configDir(), name+tokenExt) }
-
-type tokenInfo struct {
-	RefreshToken string
-	AccessToken  string
-	Sequence     string
-}
-
-func parseTokenFile(path string) (tokenInfo, error) {
-	var ti tokenInfo
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ti, err
-	}
-	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	if len(lines) >= 1 {
-		ti.RefreshToken = strings.TrimSpace(lines[0])
-	}
-	if len(lines) >= 2 {
-		ti.AccessToken = strings.TrimSpace(lines[1])
-	}
-	if len(lines) >= 3 {
-		ti.Sequence = strings.TrimSpace(lines[2])
-	}
-	if ti.RefreshToken == "" || ti.Sequence == "" {
-		return ti, errors.New("invalid token file")
-	}
-	return ti, nil
 }
 
 // exchangeTokenWithTTL mirrors the main exchange and reads expires_in if present.
