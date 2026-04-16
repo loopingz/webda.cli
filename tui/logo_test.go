@@ -2,6 +2,8 @@ package tui
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,5 +107,59 @@ func TestRenderLogo_EmptyData(t *testing.T) {
 	RenderLogo(&buf, nil)
 	if buf.Len() != 0 {
 		t.Error("expected no output for nil data")
+	}
+}
+
+func TestFetchAndCacheLogo_Download(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("PNG-DATA"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "test.logo")
+
+	data, err := FetchAndCacheLogo(srv.URL+"/logo.png", cachePath)
+	if err != nil {
+		t.Fatalf("FetchAndCacheLogo failed: %v", err)
+	}
+	if string(data) != "PNG-DATA" {
+		t.Errorf("expected 'PNG-DATA', got %q", data)
+	}
+
+	// Verify cached to disk
+	cached, _ := os.ReadFile(cachePath)
+	if string(cached) != "PNG-DATA" {
+		t.Error("expected file to be cached on disk")
+	}
+}
+
+func TestFetchAndCacheLogo_UsesCache(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "test.logo")
+	os.WriteFile(cachePath, []byte("CACHED"), 0o600)
+
+	// Server should not be called if cache exists
+	data, err := FetchAndCacheLogo("http://should-not-be-called.invalid/logo.png", cachePath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(data) != "CACHED" {
+		t.Errorf("expected cached data, got %q", data)
+	}
+}
+
+func TestFetchAndCacheLogo_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "test.logo")
+
+	_, err := FetchAndCacheLogo(srv.URL+"/logo.png", cachePath)
+	if err == nil {
+		t.Fatal("expected error for server error response")
 	}
 }

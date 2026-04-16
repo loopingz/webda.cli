@@ -1,11 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/loopingz/webda-cli/tokenstore"
+	"github.com/loopingz/webda-cli/webdaclient"
 	"github.com/spf13/cobra"
 )
 
@@ -393,5 +400,99 @@ func TestGenerateSkeleton_ObjectAndArray(t *testing.T) {
 	}
 	if skeleton["items"] == nil {
 		t.Error("expected empty slice for array")
+	}
+}
+
+func TestMakeOperationRunE_PostsToServer(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"result":"ok"}`))
+	}))
+	defer srv.Close()
+
+	store := tokenstore.NewMachineStore(t.TempDir())
+	client, _ := webdaclient.New("test", srv.URL, store)
+	defer client.Close()
+
+	op := Operation{
+		Name: "TestOp",
+		Input: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"user": map[string]any{"type": "string"},
+			},
+		},
+	}
+
+	runE := makeOperationRunE(op, client, srv.URL, nil)
+	cmd := &cobra.Command{Use: "test"}
+	cmd.SetContext(context.Background())
+	addSchemaFlags(cmd, op.Input)
+	cmd.Flags().StringP("output", "o", "pretty", "")
+	cmd.Flags().BoolP("interactive", "i", false, "")
+	cmd.Flags().String("input", "", "")
+	cmd.Flags().Bool("generate-cli-skeleton", false, "")
+	cmd.Flags().Set("user", "alice")
+
+	err := runE(cmd, nil)
+	if err != nil {
+		t.Fatalf("runE failed: %v", err)
+	}
+	if gotMethod != "POST" {
+		t.Errorf("expected POST, got %s", gotMethod)
+	}
+	if gotPath != "/operations/TestOp" {
+		t.Errorf("expected /operations/TestOp, got %s", gotPath)
+	}
+	if !strings.Contains(gotBody, `"user":"alice"`) {
+		t.Errorf("expected user in body, got %s", gotBody)
+	}
+}
+
+func TestMakeOperationRunE_GenerateSkeleton(t *testing.T) {
+	op := Operation{
+		Name: "TestOp",
+		Input: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"user": map[string]any{"type": "string"},
+			},
+		},
+	}
+
+	runE := makeOperationRunE(op, nil, "", nil)
+	cmd := &cobra.Command{Use: "test"}
+	addSchemaFlags(cmd, op.Input)
+	cmd.Flags().StringP("output", "o", "pretty", "")
+	cmd.Flags().BoolP("interactive", "i", false, "")
+	cmd.Flags().String("input", "", "")
+	cmd.Flags().Bool("generate-cli-skeleton", false, "")
+	cmd.Flags().Set("generate-cli-skeleton", "true")
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runE(cmd, nil)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("runE failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	if !strings.Contains(output, `"user"`) {
+		t.Errorf("expected skeleton with 'user', got %s", output)
 	}
 }
