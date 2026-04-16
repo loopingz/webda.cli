@@ -19,6 +19,7 @@ import (
 
 	"github.com/loopingz/webda-cli/tokenstore"
 	"github.com/loopingz/webda-cli/tui"
+	"github.com/loopingz/webda-cli/updater"
 	"github.com/loopingz/webda-cli/webdaclient"
 	browser "github.com/pkg/browser"
 	"github.com/spf13/cobra"
@@ -42,6 +43,14 @@ type Operation struct {
 	Raw         map[string]any   `json:"-"`
 	Input       map[string]any   `json:"-"` // JSON Schema for operation input
 	Output      map[string]any   `json:"-"` // JSON Schema for operation output
+}
+
+// ServerInfo holds metadata from the operations response.
+type ServerInfo struct {
+	LogoURL         string
+	ServerVersion   string
+	CLIVersionRange string
+	CLIDownloadURL  string
 }
 
 // operationsResponse attempts to map possible shapes.
@@ -226,14 +235,14 @@ func fetchCurrentUser(ctx context.Context) (User, error) {
 	return u, nil
 }
 
-func fetchOperations(ctx context.Context, name string) ([]Operation, string, error) {
+func fetchOperations(ctx context.Context, name string) ([]Operation, ServerInfo, error) {
 	resp, err := cli.Request("GET", "/operations", nil)
 	if err != nil {
-		return nil, "", err
+		return nil, ServerInfo{}, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("operations fetch failed: %s", resp.Status)
+		return nil, ServerInfo{}, fmt.Errorf("operations fetch failed: %s", resp.Status)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = os.WriteFile(opsPath(name), body, 0o600)
@@ -241,16 +250,22 @@ func fetchOperations(ctx context.Context, name string) ([]Operation, string, err
 }
 
 // parseOperationsResponse parses the full /operations response, returning
-// operations and an optional logo URL.
-func parseOperationsResponse(body []byte) ([]Operation, string, error) {
+// operations and a ServerInfo with metadata.
+func parseOperationsResponse(body []byte) ([]Operation, ServerInfo, error) {
+	var info ServerInfo
 	var gen map[string]any
 	if err := json.Unmarshal(body, &gen); err == nil {
-		logoURL, _ := gen["logo"].(string)
+		info.LogoURL, _ = gen["logo"].(string)
+		info.ServerVersion, _ = gen["version"].(string)
+		if cli, ok := gen["cli"].(map[string]any); ok {
+			info.CLIVersionRange, _ = cli["version_range"].(string)
+			info.CLIDownloadURL, _ = cli["download_url"].(string)
+		}
 		ops, err := parseOperations(body)
-		return ops, logoURL, err
+		return ops, info, err
 	}
 	ops, err := parseOperations(body)
-	return ops, "", err
+	return ops, info, err
 }
 
 // parseOperations parses the operations specification JSON body into a slice of Operation.
@@ -424,16 +439,65 @@ func main() {
 	}})
 	// Fetch operations for dynamic commands
 	var logoData []byte
-	if ops, logoURL, err := fetchOperations(ctx, invoked); err == nil {
-		// Fetch and cache logo if URL provided
-		if logoURL != "" {
+	var serverInfo ServerInfo
+	if ops, info, err := fetchOperations(ctx, invoked); err == nil {
+		serverInfo = info
+		if info.LogoURL != "" {
 			cachePath := tui.LogoCachePath(configDir(), invoked)
-			logoData, _ = tui.FetchAndCacheLogo(logoURL, cachePath)
+			logoData, _ = tui.FetchAndCacheLogo(info.LogoURL, cachePath)
 		}
 		buildCommandTree(root, cli, baseURL, ops, logoData)
 	} else {
 		fmt.Fprintf(os.Stderr, "Warning: cannot fetch operations: %v\n", err)
 	}
+	// Check if CLI version satisfies server requirement
+	if needs, _ := updater.NeedsUpdate(version, serverInfo.CLIVersionRange); needs {
+		updateMode := cfg["update"]
+		if updateMode == "" {
+			updateMode = "silent"
+		}
+		downloadURL := serverInfo.CLIDownloadURL
+		switch updateMode {
+		case "silent":
+			if tag, err := updater.Update(downloadURL); err == nil {
+				fmt.Fprintf(os.Stderr, "Updated to %s\n", tag)
+				if err := updater.SelfReExec(); err != nil {
+					fmt.Fprintf(os.Stderr, "Re-exec failed: %v. Please re-run the command.\n", err)
+					os.Exit(0) //nolint:gocritic
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: auto-update failed: %v\n", err)
+			}
+		case "prompt":
+			fmt.Fprintf(os.Stderr, "Update available (requires %s). Update now? [Y/n] ", serverInfo.CLIVersionRange)
+			var answer string
+			_, _ = fmt.Scanln(&answer)
+			if answer == "" || strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes") {
+				if tag, err := updater.Update(downloadURL); err == nil {
+					fmt.Fprintf(os.Stderr, "Updated to %s\n", tag)
+					if err := updater.SelfReExec(); err != nil {
+						fmt.Fprintf(os.Stderr, "Re-exec failed: %v. Please re-run the command.\n", err)
+						os.Exit(0) //nolint:gocritic
+					}
+				} else {
+					fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+				}
+			}
+		case "warn":
+			fmt.Fprintf(os.Stderr, "Warning: CLI version %s is outdated (server requires %s). Run '%s update' to upgrade.\n", version, serverInfo.CLIVersionRange, invoked)
+		}
+	}
+
+	root.AddCommand(newVersionCmd(baseURL, &serverInfo))
+	root.AddCommand(&cobra.Command{Use: "update", Short: "Update CLI to latest version", RunE: func(cmd *cobra.Command, args []string) error {
+		downloadURL := serverInfo.CLIDownloadURL
+		tag, err := updater.Update(downloadURL)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Updated to %s\n", tag)
+		return nil
+	}})
 
 	// Auto-install shell completion on first launch
 	installShellCompletion(root, invoked)

@@ -1,0 +1,23 @@
+#!/bin/sh
+# Pre-push hook: run linter and tests before pushing.
+# Install: git config core.hooksPath .githooks
+
+set -e
+
+# Ensure go and tools are on PATH
+export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
+
+echo "Running go vet..."
+go vet ./...
+
+echo "Running golangci-lint..."
+if command -v golangci-lint >/dev/null 2>&1; then
+    golangci-lint run --timeout=5m
+else
+    echo "Warning: golangci-lint not found, skipping lint"
+fi
+
+echo "Running tests..."
+go test -race -count=1 ./...
+
+echo "All checks passed."

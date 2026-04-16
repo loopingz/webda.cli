@@ -95,12 +95,12 @@ func TestParseOperations_Smoke(t *testing.T) {
 
 func TestParseOperationsResponse_WithLogo(t *testing.T) {
 	body := []byte(`{"logo":"https://example.com/logo.png","operations":{"A":{"id":"A"}}}`)
-	ops, logoURL, err := parseOperationsResponse(body)
+	ops, info, err := parseOperationsResponse(body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if logoURL != "https://example.com/logo.png" {
-		t.Errorf("expected logo URL, got %q", logoURL)
+	if info.LogoURL != "https://example.com/logo.png" {
+		t.Errorf("expected logo URL, got %q", info.LogoURL)
 	}
 	if len(ops) != 1 {
 		t.Errorf("expected 1 op, got %d", len(ops))
@@ -109,12 +109,12 @@ func TestParseOperationsResponse_WithLogo(t *testing.T) {
 
 func TestParseOperationsResponse_WithoutLogo(t *testing.T) {
 	body := []byte(`{"operations":{"B":{"id":"B"}}}`)
-	ops, logoURL, err := parseOperationsResponse(body)
+	ops, info, err := parseOperationsResponse(body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if logoURL != "" {
-		t.Errorf("expected empty logo URL, got %q", logoURL)
+	if info.LogoURL != "" {
+		t.Errorf("expected empty logo URL, got %q", info.LogoURL)
 	}
 	if len(ops) != 1 {
 		t.Errorf("expected 1 op, got %d", len(ops))
@@ -123,10 +123,11 @@ func TestParseOperationsResponse_WithoutLogo(t *testing.T) {
 
 func TestParseOperationsResponse_InvalidJSON(t *testing.T) {
 	body := []byte(`{invalid json`)
-	_, _, err := parseOperationsResponse(body)
+	_, info, err := parseOperationsResponse(body)
 	if err == nil {
 		t.Error("expected error for invalid JSON, got nil")
 	}
+	_ = info
 }
 
 func TestExtractToken_Valid(t *testing.T) {
@@ -564,7 +565,7 @@ func TestFetchOperations_Success(t *testing.T) {
 		cli = origCli
 	}()
 
-	ops, logoURL, err := fetchOperations(context.Background(), "test")
+	ops, info, err := fetchOperations(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("fetchOperations failed: %v", err)
 	}
@@ -574,8 +575,8 @@ func TestFetchOperations_Success(t *testing.T) {
 	if ops[0].Name != "TestService.doWork" {
 		t.Errorf("expected TestService.doWork, got %q", ops[0].Name)
 	}
-	if logoURL != "" {
-		t.Errorf("expected empty logo URL, got %q", logoURL)
+	if info.LogoURL != "" {
+		t.Errorf("expected empty logo URL, got %q", info.LogoURL)
 	}
 }
 
@@ -602,6 +603,72 @@ func TestFetchOperations_Unauthorized(t *testing.T) {
 	_, _, err := fetchOperations(context.Background(), "test")
 	if err == nil {
 		t.Fatal("expected error when unauthorized")
+	}
+}
+
+func TestParseOperationsResponse_WithServerInfo(t *testing.T) {
+	body := []byte(`{
+		"operations": {"TestOp": {"id": "TestOp"}},
+		"version": "2.1.0",
+		"logo": "https://example.com/logo.png",
+		"cli": {
+			"version_range": ">=1.2.0",
+			"download_url": "https://example.com/releases"
+		}
+	}`)
+	ops, info, err := parseOperationsResponse(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("expected 1 op, got %d", len(ops))
+	}
+	if info.ServerVersion != "2.1.0" {
+		t.Errorf("expected server version 2.1.0, got %q", info.ServerVersion)
+	}
+	if info.LogoURL != "https://example.com/logo.png" {
+		t.Errorf("expected logo URL, got %q", info.LogoURL)
+	}
+	if info.CLIVersionRange != ">=1.2.0" {
+		t.Errorf("expected version range >=1.2.0, got %q", info.CLIVersionRange)
+	}
+	if info.CLIDownloadURL != "https://example.com/releases" {
+		t.Errorf("expected download URL, got %q", info.CLIDownloadURL)
+	}
+}
+
+func TestParseOperationsResponse_NoCLIField(t *testing.T) {
+	body := []byte(`{"operations": {"TestOp": {"id": "TestOp"}}}`)
+	_, info, err := parseOperationsResponse(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.CLIVersionRange != "" {
+		t.Errorf("expected empty version range, got %q", info.CLIVersionRange)
+	}
+}
+
+func TestParseOperationsResponse_AllMetadataOptional(t *testing.T) {
+	// Server returns only operations — no logo, version, or cli fields
+	body := []byte(`{"operations": {"Op1": {"id": "Op1"}, "Op2": {"id": "Op2"}}}`)
+	ops, info, err := parseOperationsResponse(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("expected 2 ops, got %d", len(ops))
+	}
+	if info.LogoURL != "" {
+		t.Errorf("expected empty LogoURL, got %q", info.LogoURL)
+	}
+	if info.ServerVersion != "" {
+		t.Errorf("expected empty ServerVersion, got %q", info.ServerVersion)
+	}
+	if info.CLIVersionRange != "" {
+		t.Errorf("expected empty CLIVersionRange, got %q", info.CLIVersionRange)
+	}
+	if info.CLIDownloadURL != "" {
+		t.Errorf("expected empty CLIDownloadURL, got %q", info.CLIDownloadURL)
 	}
 }
 

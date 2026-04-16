@@ -130,6 +130,16 @@ myapp completion fish > ~/.config/fish/completions/myapp.fish
 
 If the server provides a `logo` URL in the operations response, the CLI displays it inline in terminals that support it (iTerm2, Kitty, WezTerm). The logo appears in help output and interactive TUI forms.
 
+## Development
+
+After cloning, enable the pre-push hook to run linting and tests before each push:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+This runs `go vet`, `golangci-lint`, and `go test -race` automatically.
+
 ## Files
 
 | Path | Purpose |
