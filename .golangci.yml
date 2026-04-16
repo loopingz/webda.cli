@@ -20,8 +20,6 @@ linters:
         - performance
       disabled-checks:
         - hugeParam
-    goimports:
-      local-prefixes: github.com/loopingz/webda-cli
     misspell:
       locale: US
   exclusions:
