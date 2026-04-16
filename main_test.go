@@ -95,12 +95,12 @@ func TestParseOperations_Smoke(t *testing.T) {
 
 func TestParseOperationsResponse_WithLogo(t *testing.T) {
 	body := []byte(`{"logo":"https://example.com/logo.png","operations":{"A":{"id":"A"}}}`)
-	ops, logoURL, err := parseOperationsResponse(body)
+	ops, info, err := parseOperationsResponse(body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if logoURL != "https://example.com/logo.png" {
-		t.Errorf("expected logo URL, got %q", logoURL)
+	if info.LogoURL != "https://example.com/logo.png" {
+		t.Errorf("expected logo URL, got %q", info.LogoURL)
 	}
 	if len(ops) != 1 {
 		t.Errorf("expected 1 op, got %d", len(ops))
@@ -109,12 +109,12 @@ func TestParseOperationsResponse_WithLogo(t *testing.T) {
 
 func TestParseOperationsResponse_WithoutLogo(t *testing.T) {
 	body := []byte(`{"operations":{"B":{"id":"B"}}}`)
-	ops, logoURL, err := parseOperationsResponse(body)
+	ops, info, err := parseOperationsResponse(body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if logoURL != "" {
-		t.Errorf("expected empty logo URL, got %q", logoURL)
+	if info.LogoURL != "" {
+		t.Errorf("expected empty logo URL, got %q", info.LogoURL)
 	}
 	if len(ops) != 1 {
 		t.Errorf("expected 1 op, got %d", len(ops))
@@ -123,10 +123,11 @@ func TestParseOperationsResponse_WithoutLogo(t *testing.T) {
 
 func TestParseOperationsResponse_InvalidJSON(t *testing.T) {
 	body := []byte(`{invalid json`)
-	_, _, err := parseOperationsResponse(body)
+	_, info, err := parseOperationsResponse(body)
 	if err == nil {
 		t.Error("expected error for invalid JSON, got nil")
 	}
+	_ = info
 }
 
 func TestExtractToken_Valid(t *testing.T) {
@@ -564,7 +565,7 @@ func TestFetchOperations_Success(t *testing.T) {
 		cli = origCli
 	}()
 
-	ops, logoURL, err := fetchOperations(context.Background(), "test")
+	ops, info, err := fetchOperations(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("fetchOperations failed: %v", err)
 	}
@@ -574,8 +575,8 @@ func TestFetchOperations_Success(t *testing.T) {
 	if ops[0].Name != "TestService.doWork" {
 		t.Errorf("expected TestService.doWork, got %q", ops[0].Name)
 	}
-	if logoURL != "" {
-		t.Errorf("expected empty logo URL, got %q", logoURL)
+	if info.LogoURL != "" {
+		t.Errorf("expected empty logo URL, got %q", info.LogoURL)
 	}
 }
 

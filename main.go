@@ -44,6 +44,14 @@ type Operation struct {
 	Output      map[string]any   `json:"-"` // JSON Schema for operation output
 }
 
+// ServerInfo holds metadata from the operations response.
+type ServerInfo struct {
+	LogoURL         string
+	ServerVersion   string
+	CLIVersionRange string
+	CLIDownloadURL  string
+}
+
 // operationsResponse attempts to map possible shapes.
 type operationsResponse struct {
 	Operations []Operation `json:"operations"`
@@ -226,14 +234,14 @@ func fetchCurrentUser(ctx context.Context) (User, error) {
 	return u, nil
 }
 
-func fetchOperations(ctx context.Context, name string) ([]Operation, string, error) {
+func fetchOperations(ctx context.Context, name string) ([]Operation, ServerInfo, error) {
 	resp, err := cli.Request("GET", "/operations", nil)
 	if err != nil {
-		return nil, "", err
+		return nil, ServerInfo{}, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("operations fetch failed: %s", resp.Status)
+		return nil, ServerInfo{}, fmt.Errorf("operations fetch failed: %s", resp.Status)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = os.WriteFile(opsPath(name), body, 0o600)
@@ -241,16 +249,22 @@ func fetchOperations(ctx context.Context, name string) ([]Operation, string, err
 }
 
 // parseOperationsResponse parses the full /operations response, returning
-// operations and an optional logo URL.
-func parseOperationsResponse(body []byte) ([]Operation, string, error) {
+// operations and a ServerInfo with metadata.
+func parseOperationsResponse(body []byte) ([]Operation, ServerInfo, error) {
+	var info ServerInfo
 	var gen map[string]any
 	if err := json.Unmarshal(body, &gen); err == nil {
-		logoURL, _ := gen["logo"].(string)
+		info.LogoURL, _ = gen["logo"].(string)
+		info.ServerVersion, _ = gen["version"].(string)
+		if cli, ok := gen["cli"].(map[string]any); ok {
+			info.CLIVersionRange, _ = cli["version_range"].(string)
+			info.CLIDownloadURL, _ = cli["download_url"].(string)
+		}
 		ops, err := parseOperations(body)
-		return ops, logoURL, err
+		return ops, info, err
 	}
 	ops, err := parseOperations(body)
-	return ops, "", err
+	return ops, info, err
 }
 
 // parseOperations parses the operations specification JSON body into a slice of Operation.
@@ -424,16 +438,18 @@ func main() {
 	}})
 	// Fetch operations for dynamic commands
 	var logoData []byte
-	if ops, logoURL, err := fetchOperations(ctx, invoked); err == nil {
-		// Fetch and cache logo if URL provided
-		if logoURL != "" {
+	var serverInfo ServerInfo
+	if ops, info, err := fetchOperations(ctx, invoked); err == nil {
+		serverInfo = info
+		if info.LogoURL != "" {
 			cachePath := tui.LogoCachePath(configDir(), invoked)
-			logoData, _ = tui.FetchAndCacheLogo(logoURL, cachePath)
+			logoData, _ = tui.FetchAndCacheLogo(info.LogoURL, cachePath)
 		}
 		buildCommandTree(root, cli, baseURL, ops, logoData)
 	} else {
 		fmt.Fprintf(os.Stderr, "Warning: cannot fetch operations: %v\n", err)
 	}
+	_ = serverInfo
 
 	// Auto-install shell completion on first launch
 	installShellCompletion(root, invoked)
