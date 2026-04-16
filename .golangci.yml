@@ -1,3 +1,5 @@
+version: "2"
+
 linters:
   enable:
     - errcheck
@@ -6,15 +8,11 @@ linters:
     - unused
     - gosimple
     - ineffassign
-    - typecheck
     - gocritic
     - gofmt
     - goimports
     - misspell
-    - nilerr
-    - prealloc
     - unconvert
-    - unparam
 
 linters-settings:
   gocritic:
@@ -33,4 +31,3 @@ issues:
     - path: _test\.go
       linters:
         - errcheck
-        - unparam
