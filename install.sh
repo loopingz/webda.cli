@@ -25,7 +25,11 @@ HELP
 }
 
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
-require_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || fail "$1 requires a value"; }
+require_value() {
+    if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        fail "$1 requires a value"
+    fi
+}
 
 main() {
     name=webda.cli
