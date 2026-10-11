@@ -49,7 +49,7 @@ jobs:
             done
           done
       - name: Generate checksums
-        run: sha256sum webda-cli-* install.sh > checksums.txt
+        run: sha256sum webda-cli-* install.sh install.ps1 > checksums.txt
       - name: Upload release assets
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
@@ -58,3 +58,4 @@ jobs:
             webda-cli-*
             checksums.txt
             install.sh
+            install.ps1
