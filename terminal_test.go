@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -61,7 +62,12 @@ func TestExplorerTerminalFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	cmd := exec.Command(executable, "-test.run=^TestExplorerTerminalHelper$")
+	args := []string{"-test.run=^TestExplorerTerminalHelper$"}
+	// Merge coverage from the instrumented child into the parent test report.
+	if directory := flag.Lookup("test.gocoverdir"); directory != nil && directory.Value.String() != "" {
+		args = append(args, "-test.gocoverdir="+directory.Value.String())
+	}
+	cmd := exec.Command(executable, args...)
 	cmd.Env = append(os.Environ(), "WEBDA_CLI_TUI_HELPER=1", "WEBDA_CLI_TEST_DIR="+dir, "HOME="+dir, "TERM=xterm-256color", "NO_COLOR=1")
 	terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 30, Cols: 110})
 	if err != nil {

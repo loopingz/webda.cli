@@ -72,3 +72,50 @@ func TestNestedRedaction(t *testing.T) {
 		t.Fatal("redaction mutated input")
 	}
 }
+
+func TestNestedSchemaConstraints(t *testing.T) {
+	tests := []struct {
+		name           string
+		schema         map[string]any
+		valid, invalid any
+		message        string
+	}{
+		{"object type", map[string]any{"type": "object"}, map[string]any{}, "text", "must be object"},
+		{"boolean type", map[string]any{"type": "boolean"}, false, "false", "must be boolean"},
+		{"array type", map[string]any{"type": "array"}, []any{}, "[]", "must be array"},
+		{"array minimum", map[string]any{"type": "array", "minItems": 2}, []any{1, 2}, []any{1}, "at least 2 items"},
+		{"array maximum", map[string]any{"type": "array", "maxItems": 1}, []any{1}, []any{1, 2}, "at most 1 items"},
+		{"array item type", map[string]any{"type": "array", "items": map[string]any{"type": "integer"}}, []any{1}, []any{"one"}, "[0] must be integer"},
+		{"string type", map[string]any{"type": "string"}, "name", true, "must be string"},
+		{"string maximum", map[string]any{"type": "string", "maxLength": 2}, "é好", "abc", "at most 2 characters"},
+		{"string pattern", map[string]any{"type": "string", "pattern": "^[a-z]+$"}, "alice", "123", "does not match"},
+		{"number maximum", map[string]any{"type": "number", "maximum": 2}, 2.0, 3.0, "at most 2"},
+		{"unknown property", map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}}, "additionalProperties": false}, map[string]any{"name": "alice"}, map[string]any{"typo": "alice"}, "typo is unknown"},
+		{"nested required", map[string]any{"type": "object", "properties": map[string]any{"user": map[string]any{"type": "object", "required": []any{"name"}, "properties": map[string]any{"name": map[string]any{"type": "string"}}}}}, map[string]any{"user": map[string]any{"name": "alice"}}, map[string]any{"user": map[string]any{}}, "user.name is required"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateValue(tc.schema, tc.valid, "input"); err != nil {
+				t.Fatalf("valid input rejected: %v", err)
+			}
+			if err := validateValue(tc.schema, tc.invalid, "input"); err == nil || !strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("expected %q, got %v", tc.message, err)
+			}
+		})
+	}
+	if err := validateValue(map[string]any{"type": "string", "pattern": "["}, "alice", "input"); err == nil || !strings.Contains(err.Error(), "invalid schema pattern") {
+		t.Fatalf("malformed schema not reported: %v", err)
+	}
+}
+func TestTypedEnumsIncludingEmptyString(t *testing.T) {
+	for _, value := range []any{false, 2, "", "2"} {
+		schema := map[string]any{"properties": map[string]any{"choice": map[string]any{"enum": []any{false, 2, "", "2"}}}}
+		fields := SchemaFields(schema)
+		original := map[string]any{"choice": value}
+		_, bindings := BuildForm(fields, original)
+		out, err := NormalizeForm(fields, original, bindings)
+		if err != nil || !reflect.DeepEqual(out["choice"], value) {
+			t.Fatalf("enum type lost: %#v → %#v (%v)", value, out, err)
+		}
+	}
+}

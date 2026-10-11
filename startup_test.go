@@ -78,3 +78,64 @@ func TestRequestedTimeout(t *testing.T) {
 		t.Fatalf("unexpected timeout: %v %v", timeout, err)
 	}
 }
+
+func TestSetupRejectsInvalidProfilesAndURLs(t *testing.T) {
+	for _, args := range [][]string{{"--name", "../escape", "--url", "https://example.com"}, {"--name", "update", "--url", "https://example.com"}, {"--name", "staging", "--url", "ftp://example.com"}, {"--name", "staging", "--url", "https://user:password@example.com"}, {"--name", "staging", "--url", "https://example.com?secret=value"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			root := &cobra.Command{Use: "myapp", SilenceErrors: true, SilenceUsage: true}
+			root.SetOut(&bytes.Buffer{})
+			root.SetErr(&bytes.Buffer{})
+			addLocalCommands(root, "myapp", nil)
+			root.SetArgs(append([]string{"setup"}, args...))
+			if err := root.Execute(); err == nil {
+				t.Fatal("invalid setup accepted")
+			}
+			if _, err := os.Stat(filepath.Join(home, ".webdacli", "config.yaml")); !os.IsNotExist(err) {
+				t.Fatal("invalid setup wrote configuration")
+			}
+		})
+	}
+}
+func TestSetupPreservesBrokenExistingConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".webdacli")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	before := []byte("staging: [broken")
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := &cobra.Command{Use: "myapp", SilenceErrors: true, SilenceUsage: true}
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	addLocalCommands(root, "myapp", nil)
+	root.SetArgs([]string{"setup", "--name", "new", "--url", "https://example.com"})
+	if err := root.Execute(); err == nil {
+		t.Fatal("broken configuration silently overwritten")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("configuration changed: %s %v", after, err)
+	}
+}
+func TestSetupExplicitCompletionOptIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/fish")
+	root := &cobra.Command{Use: "myapp"}
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	addLocalCommands(root, "myapp", nil)
+	root.SetArgs([]string{"setup", "--name", "staging", "--url", "https://example.com", "--install-completion"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(home, ".config", "fish", "completions", "myapp.fish")); err != nil || !bytes.Contains(data, []byte("myapp")) {
+		t.Fatalf("completion not installed: %v", err)
+	}
+}
