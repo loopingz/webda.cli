@@ -1,28 +1,49 @@
 # webda-cli
 
-[![CI](https://github.com/loopingz/webda-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/loopingz/webda-cli/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/loopingz/webda-cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/loopingz/webda-cli/actions/workflows/codeql.yml)
-[![codecov](https://codecov.io/gh/loopingz/webda-cli/graph/badge.svg)](https://codecov.io/gh/loopingz/webda-cli)
+[![CI](https://github.com/loopingz/webda.cli/actions/workflows/ci.yml/badge.svg)](https://github.com/loopingz/webda.cli/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/loopingz/webda.cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/loopingz/webda.cli/actions/workflows/codeql.yml)
+[![codecov](https://codecov.io/gh/loopingz/webda.cli/graph/badge.svg)](https://codecov.io/gh/loopingz/webda.cli)
 
 A dynamic CLI client for [Webda](https://webda.io) applications. The binary name determines which remote host it connects to, configured via `~/.webdacli/config.yaml`.
 
 ## Installation
 
+Requires Go 1.25 or newer. Once a release containing the corrected module path is
+published, install with:
+
 ```bash
-go install github.com/loopingz/webda-cli@latest
+go install github.com/loopingz/webda.cli@latest
 ```
 
-Or build from source:
+This installs the command as `webda.cli` in `GOBIN`, or `$(go env GOPATH)/bin` when
+`GOBIN` is unset. Add that directory to your `PATH`, then run `webda.cli setup`.
+
+**The v1.1.0 release cannot be installed with this command:** it declares
+`github.com/loopingz/webda-cli` as its module path, which differs from the actual
+repository path. Use a source build until a corrected release is available:
 
 ```bash
-go build -o myapp .
-cp myapp /usr/local/bin/myapp
+git clone https://github.com/loopingz/webda.cli.git
+cd webda.cli
+go build -o webda-cli .
+./webda-cli setup
 ```
 
-Create symlinks for each remote host you want to connect to — the binary name maps to the config key:
+To install the source-built binary under a custom command name:
 
 ```bash
-ln -s /usr/local/bin/myapp /usr/local/bin/mystaging
+mkdir -p "$HOME/.local/bin"
+install -m 755 webda-cli "$HOME/.local/bin/myapp"
+```
+
+Add `$HOME/.local/bin` to your `PATH`. The binary name is the default profile name;
+configure it with `myapp setup --name myapp --url https://app.example.com`.
+You can also select an existing profile with `myapp --profile staging explore`.
+
+Optional aliases retain the binary-name profile behavior:
+
+```bash
+ln -s "$HOME/.local/bin/myapp" "$HOME/.local/bin/mystaging"
 ```
 
 ## Configuration
@@ -30,10 +51,10 @@ ln -s /usr/local/bin/myapp /usr/local/bin/mystaging
 Configure a named profile using the setup wizard, or supply values directly:
 
 ```bash
-webda-cli setup
-webda-cli setup --name staging --url https://staging.example.com
-webda-cli profiles
-webda-cli --profile staging explore
+webda.cli setup
+webda.cli setup --name staging --url https://staging.example.com
+webda.cli profiles
+webda.cli --profile staging explore
 ```
 
 Host mappings are stored in `~/.webdacli/config.yaml`:

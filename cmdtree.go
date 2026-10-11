@@ -10,8 +10,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/loopingz/webda-cli/tui"
-	"github.com/loopingz/webda-cli/webdaclient"
+	"github.com/loopingz/webda.cli/tui"
+	"github.com/loopingz/webda.cli/webdaclient"
 	"github.com/spf13/cobra"
 )
 

@@ -1,4 +1,4 @@
-module github.com/loopingz/webda-cli
+module github.com/loopingz/webda.cli
 
 go 1.25.0
 

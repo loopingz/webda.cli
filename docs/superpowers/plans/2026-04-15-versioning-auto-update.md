@@ -210,7 +210,7 @@ import (
 	semver "github.com/Masterminds/semver/v3"
 )
 
-const defaultGitHubRepo = "loopingz/webda-cli"
+const defaultGitHubRepo = "loopingz/webda.cli"
 
 // NeedsUpdate returns true if currentVersion does not satisfy the constraint.
 // Returns false for dev builds or empty constraints.
@@ -250,7 +250,7 @@ type ghAsset struct {
 }
 
 // FetchLatestRelease fetches the latest release info from GitHub (or a custom base URL).
-// downloadURL should be like "https://github.com/loopingz/webda-cli/releases" or empty for default.
+// downloadURL should be like "https://github.com/loopingz/webda.cli/releases" or empty for default.
 func FetchLatestRelease(downloadURL string) (*ghRelease, error) {
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", defaultGitHubRepo)
 	if downloadURL != "" && !strings.Contains(downloadURL, "github.com/"+defaultGitHubRepo) {
@@ -600,7 +600,7 @@ Append to `version.go`:
 import (
 	"fmt"
 
-	"github.com/loopingz/webda-cli/webdaclient"
+	"github.com/loopingz/webda.cli/webdaclient"
 	"github.com/spf13/cobra"
 )
 
@@ -619,11 +619,11 @@ func newVersionCmd(baseURL string, serverInfo *ServerInfo, client *webdaclient.C
 }
 ```
 
-Note: merge the import blocks — `version.go` should have a single import block with `"fmt"`, `"github.com/loopingz/webda-cli/webdaclient"`, and `"github.com/spf13/cobra"`.
+Note: merge the import blocks — `version.go` should have a single import block with `"fmt"`, `"github.com/loopingz/webda.cli/webdaclient"`, and `"github.com/spf13/cobra"`.
 
 - [ ] **Step 2: Add update command and auto-update check to main.go**
 
-Add `"github.com/loopingz/webda-cli/updater"` to the import block in `main.go`.
+Add `"github.com/loopingz/webda.cli/updater"` to the import block in `main.go`.
 
 After the operations fetch block and before `installShellCompletion`, add the auto-update check:
 

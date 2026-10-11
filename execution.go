@@ -15,8 +15,8 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
-	"github.com/loopingz/webda-cli/tui"
-	"github.com/loopingz/webda-cli/webdaclient"
+	"github.com/loopingz/webda.cli/tui"
+	"github.com/loopingz/webda.cli/webdaclient"
 )
 
 func terminalInput(r io.Reader) bool  { f, ok := r.(*os.File); return ok && term.IsTerminal(f.Fd()) }

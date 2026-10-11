@@ -2,8 +2,10 @@ package updater
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -152,5 +154,33 @@ func TestDownloadAndReplace_ServerError(t *testing.T) {
 	err := DownloadAndReplace(srv.URL + "/binary")
 	if err == nil {
 		t.Fatal("expected error for 404")
+	}
+}
+
+type releaseRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f releaseRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestFetchLatestReleaseCanonicalRepository(t *testing.T) {
+	previous := http.DefaultClient
+	defer func() { http.DefaultClient = previous }()
+	for _, downloadURL := range []string{"", "https://github.com/loopingz/webda.cli/releases", "https://github.com/loopingz/webda.cli/releases/"} {
+		t.Run(downloadURL, func(t *testing.T) {
+			called := false
+			http.DefaultClient = &http.Client{Transport: releaseRoundTripper(func(req *http.Request) (*http.Response, error) {
+				called = true
+				if got := req.URL.String(); got != "https://api.github.com/repos/loopingz/webda.cli/releases/latest" {
+					t.Errorf("wrong release endpoint: %s", got)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"tag_name":"v1.1.1","assets":[]}`)), Header: make(http.Header)}, nil
+			})}
+			release, err := FetchLatestRelease(downloadURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !called || release.TagName != "v1.1.1" {
+				t.Fatalf("release not fetched: %#v", release)
+			}
+		})
 	}
 }

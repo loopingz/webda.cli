@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/loopingz/webda-cli/tokenstore"
+	"github.com/loopingz/webda.cli/tokenstore"
 )
 
 func TestRefreshReplaysJSONBody(t *testing.T) {

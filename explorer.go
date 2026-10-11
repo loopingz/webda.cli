@@ -19,7 +19,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/loopingz/webda-cli/tui"
+	"github.com/loopingz/webda.cli/tui"
 	"github.com/spf13/cobra"
 )
 
