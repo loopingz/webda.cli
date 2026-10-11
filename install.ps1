@@ -45,6 +45,7 @@ $asset = "webda-cli-windows-$architecture.exe"
 $releaseBase = "$repository/releases/download/$Version"
 $workDir = Join-Path ([IO.Path]::GetTempPath()) ('webda-cli-install-' + [Guid]::NewGuid().ToString('N'))
 $stagedBinary = $null
+$backupBinary = $null
 try {
     New-Item -ItemType Directory -Path $workDir | Out-Null
     Write-Host "Installing $Version (windows/$architecture)..."
@@ -65,7 +66,9 @@ try {
     $stagedBinary = Join-Path $InstallDir ('.install-' + [Guid]::NewGuid().ToString('N') + '.exe')
     Copy-Item $download $stagedBinary
     if (Test-Path $target) {
-        [IO.File]::Replace($stagedBinary, $target, $null)
+        # PowerShell converts a null string argument to an empty path on .NET.
+        $backupBinary = Join-Path $InstallDir ('.backup-' + [Guid]::NewGuid().ToString('N') + '.exe')
+        [IO.File]::Replace($stagedBinary, $target, $backupBinary)
     } else {
         [IO.File]::Move($stagedBinary, $target)
     }
@@ -83,5 +86,6 @@ try {
     else { Write-Host "Run $Name setup to configure a server." }
 } finally {
     if ($stagedBinary -and (Test-Path $stagedBinary)) { Remove-Item -Force $stagedBinary }
+    if ($backupBinary -and (Test-Path $backupBinary)) { Remove-Item -Force $backupBinary }
     if (Test-Path $workDir) { Remove-Item -Recurse -Force $workDir }
 }
