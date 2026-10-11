@@ -10,17 +10,16 @@ A dynamic CLI client for [Webda](https://webda.io) applications. The binary name
 
 ### Release installer (no Go SDK)
 
-For macOS and Linux on Intel/AMD or ARM64, download the installer and run it:
+For macOS and Linux on Intel/AMD or ARM64, run:
 
 ```bash
-curl -fsSL https://github.com/loopingz/webda.cli/releases/latest/download/install.sh -o install.sh
-sh install.sh
+curl -fsSL https://github.com/loopingz/webda.cli/releases/latest/download/install.sh | sh
 ```
 
 Install and configure a client for a server in one step:
 
 ```bash
-sh install.sh --server https://app.example.com --name myapp
+curl -fsSL https://github.com/loopingz/webda.cli/releases/latest/download/install.sh | sh -s -- --server https://app.example.com --name myapp
 myapp explore
 ```
 
@@ -33,6 +32,7 @@ happens when you first use the client, so installation does not open a browser.
 Additional options:
 
 ```bash
+curl -fsSL https://github.com/loopingz/webda.cli/releases/latest/download/install.sh -o install.sh
 sh install.sh --version v1.2.0 --install-dir "$HOME/bin"
 sh install.sh --server https://staging.example.com --name staging --install-completion
 ```
@@ -41,6 +41,37 @@ Shell completion installation is opt-in. The script requires `curl` and either
 `sha256sum` (Linux) or `shasum` (macOS), and supports `--help`.
 The installer and `checksums.txt` will be included in releases containing this
 change; older releases such as v1.1.0 do not provide them.
+
+### Windows (no Go SDK)
+
+Download a binary from the [latest release](https://github.com/loopingz/webda.cli/releases/latest):
+
+- Intel/AMD Windows: `webda-cli-windows-amd64.exe`
+- ARM64 Windows: `webda-cli-windows-arm64.exe`
+
+Save it in your Downloads folder. In PowerShell, install it under your user
+directory (replace `amd64` with `arm64` for ARM64 Windows):
+
+```powershell
+$installDir = Join-Path $env:LOCALAPPDATA 'WebdaCLI'
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+Move-Item "$HOME\Downloads\webda-cli-windows-amd64.exe" "$installDir\webda.cli.exe" -Force
+$env:Path = "$installDir;$env:Path"
+webda.cli.exe setup --name webda.cli --url https://app.example.com
+webda.cli.exe explore
+```
+
+Replace the example server URL with your server. Authentication happens on first
+use. To make the command available in future terminals, open **Edit environment
+variables for your account**, edit the user **Path**, and add
+`%LOCALAPPDATA%\WebdaCLI`. Open a new terminal afterward.
+
+For releases that include `checksums.txt`, download it alongside the binary and
+compare the matching entry with the hash printed by PowerShell before installing:
+
+```powershell
+Get-FileHash "$HOME\Downloads\webda-cli-windows-amd64.exe" -Algorithm SHA256
+```
 
 ### Install with Go
 
