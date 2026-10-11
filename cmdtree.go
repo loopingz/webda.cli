@@ -1,13 +1,13 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/loopingz/webda-cli/tui"
@@ -81,15 +81,29 @@ func buildCommandTree(root *cobra.Command, client *webdaclient.Client, baseURL s
 		cmd := &cobra.Command{
 			Use:   leaf,
 			Short: o.Description,
+			Args:  cobra.NoArgs,
 			RunE:  makeOperationRunE(o, client, baseURL, logoData),
 		}
 		addSchemaFlags(cmd, o.Input)
-		cmd.Flags().StringP("output", "o", "pretty", "output format: raw|pretty")
+		cmd.Flags().StringP("output", "o", "pretty", "output format: json|table|raw|pretty")
 		cmd.Flags().BoolP("interactive", "i", false, "force interactive TUI form")
-		cmd.Flags().String("input", "", "read operation input from a JSON file")
+		cmd.Flags().Bool("no-interactive", false, "never prompt; fail on missing input")
+		cmd.Flags().Bool("yes", false, "confirm an operation marked destructive")
+		cmd.Flags().Bool("accessible", false, "use plain accessible prompts")
+		cmd.Flags().String("input", "", "read JSON from a file or - for stdin")
 		cmd.Flags().Bool("generate-cli-skeleton", false, "print a JSON skeleton for the input schema and exit")
 		parent.AddCommand(cmd)
 	}
+}
+
+// schemaFlagName keeps server field names from shadowing built-in flags.
+func schemaFlagName(name string) string {
+	flag := camelToKebab(name)
+	switch flag {
+	case "input", "output", "interactive", "no-interactive", "accessible", "yes", "generate-cli-skeleton", "profile", "timeout", "help":
+		return "field-" + flag
+	}
+	return flag
 }
 
 // addSchemaFlags adds CLI flags from a JSON schema's properties.
@@ -114,7 +128,7 @@ func addSchemaFlags(cmd *cobra.Command, schema map[string]any) {
 		if !ok {
 			continue
 		}
-		flagName := camelToKebab(name)
+		flagName := schemaFlagName(name)
 		desc := ""
 		if d, ok := prop["description"].(string); ok {
 			desc = d
@@ -151,6 +165,10 @@ func generateSkeleton(schema map[string]any) map[string]any {
 		if !ok {
 			continue
 		}
+		if value, ok := prop["default"]; ok {
+			skeleton[name] = value
+			continue
+		}
 		typ, _ := prop["type"].(string)
 		switch typ {
 		case "boolean":
@@ -162,7 +180,7 @@ func generateSkeleton(schema map[string]any) map[string]any {
 		case "array":
 			skeleton[name] = []any{}
 		case "object":
-			skeleton[name] = map[string]any{}
+			skeleton[name] = generateSkeleton(prop)
 		default:
 			// Check for enum — use first value as example
 			if enums, ok := prop["enum"].([]any); ok && len(enums) > 0 {
@@ -183,51 +201,49 @@ func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string,
 		if genSkeleton, _ := cmd.Flags().GetBool("generate-cli-skeleton"); genSkeleton {
 			skeleton := generateSkeleton(op.Input)
 			b, _ := json.MarshalIndent(skeleton, "", "  ")
-			fmt.Println(string(b))
-			return nil
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), string(b))
+			return err
 		}
 
 		body, err := collectInput(cmd, op, logoData)
 		if err != nil {
 			return err
 		}
-		jsonBody, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		var reader io.Reader
-		if len(body) > 0 {
-			reader = bytes.NewReader(jsonBody)
-		}
-		url := strings.TrimRight(baseURL, "/") + "/operations/" + op.Name
-		req, err := http.NewRequestWithContext(cmd.Context(), http.MethodPost, url, reader)
-		if err != nil {
-			return err
-		}
-		if reader != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = resp.Body.Close() }()
-		rb, _ := io.ReadAll(resp.Body)
-		format, _ := cmd.Flags().GetString("output")
-		if format == "pretty" && json.Valid(rb) {
-			var out bytes.Buffer
-			if err := json.Indent(&out, rb, "", "  "); err == nil {
-				rb = out.Bytes()
+		if interactive, _ := cmd.Flags().GetBool("interactive"); interactive || cmd.Annotations["prompted"] == "true" {
+			accessible, _ := cmd.Flags().GetBool("accessible")
+			accepted, err := reviewOperation(cmd, op, client.Name, baseURL, body, accessible)
+			if err != nil {
+				return err
+			}
+			if !accepted {
+				return fmt.Errorf("operation canceled")
+			}
+		} else if isDestructive(op) {
+			yes, _ := cmd.Flags().GetBool("yes")
+			if !yes {
+				return fmt.Errorf("destructive operation; review with --interactive or explicitly confirm with --yes")
 			}
 		}
-		if resp.StatusCode >= 300 {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Status)
+		format, _ := cmd.Flags().GetString("output")
+		if !validOutput(format) {
+			return fmt.Errorf("unknown output format %q; choose json, table, raw, or pretty", format)
 		}
-		_, _ = os.Stdout.Write(rb)
-		if len(rb) == 0 {
-			fmt.Println(resp.Status)
+		timeout, _ := cmd.Flags().GetDuration("timeout")
+		if timeout == 0 {
+			timeout = 30 * time.Second
 		}
-		return nil
+		ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+		defer cancel()
+		rb, err := executeOperation(ctx, op, client, baseURL, body)
+		if err != nil {
+			return err
+		}
+		rendered, err := renderOutput(rb, format)
+		if err != nil {
+			return err
+		}
+		_, err = cmd.OutOrStdout().Write(rendered)
+		return err
 	}
 }
 
@@ -235,10 +251,24 @@ func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string,
 // Priority: file input is loaded first, then flags override, then TUI fills gaps.
 func collectInput(cmd *cobra.Command, op Operation, logoData []byte) (map[string]any, error) {
 	body := map[string]any{}
+	interactive, _ := cmd.Flags().GetBool("interactive")
+	disabled, _ := cmd.Flags().GetBool("no-interactive")
+	if interactive && disabled {
+		return nil, fmt.Errorf("--interactive and --no-interactive cannot be combined")
+	}
+	if interactive && (!terminalInput(cmd.InOrStdin()) || !terminalOutput(cmd.ErrOrStderr())) {
+		return nil, fmt.Errorf("--interactive requires terminal stdin and stderr; supply flags or --input without --interactive")
+	}
 
 	// Load from --input file if provided
 	if inputFile, _ := cmd.Flags().GetString("input"); inputFile != "" {
-		data, err := os.ReadFile(inputFile)
+		var data []byte
+		var err error
+		if inputFile == "-" {
+			data, err = io.ReadAll(cmd.InOrStdin())
+		} else {
+			data, err = os.ReadFile(inputFile)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("cannot read input file: %w", err)
 		}
@@ -247,6 +277,9 @@ func collectInput(cmd *cobra.Command, op Operation, logoData []byte) (map[string
 		}
 	}
 
+	if body == nil {
+		return nil, fmt.Errorf("input must be a JSON object")
+	}
 	if op.Input == nil {
 		return body, nil
 	}
@@ -261,7 +294,7 @@ func collectInput(cmd *cobra.Command, op Operation, logoData []byte) (map[string
 		if !ok {
 			continue
 		}
-		flagName := camelToKebab(name)
+		flagName := schemaFlagName(name)
 		f := cmd.Flags().Lookup(flagName)
 		if f == nil || !f.Changed {
 			continue
@@ -277,27 +310,53 @@ func collectInput(cmd *cobra.Command, op Operation, logoData []byte) (map[string
 		case "number":
 			val, _ := cmd.Flags().GetFloat64(flagName)
 			body[name] = val
+		case "object", "array":
+			val, _ := cmd.Flags().GetString(flagName)
+			var decoded any
+			if err := json.Unmarshal([]byte(val), &decoded); err != nil {
+				return nil, fmt.Errorf("--%s must contain valid JSON: %w", flagName, err)
+			}
+			body[name] = decoded
 		default:
 			val, _ := cmd.Flags().GetString(flagName)
 			body[name] = val
 		}
 	}
 
-	interactive, _ := cmd.Flags().GetBool("interactive")
+	for key, raw := range props {
+		prop, _ := raw.(map[string]any)
+		if _, exists := body[key]; !exists {
+			if value, ok := prop["default"]; ok {
+				body[key] = value
+			}
+		}
+	}
 	if interactive || hasMissingRequired(op.Input, body) {
+		if disabled || !terminalInput(cmd.InOrStdin()) || !terminalOutput(cmd.ErrOrStderr()) {
+			return nil, fmt.Errorf("input requires a terminal; supply required flags or --input (missing: %s)", strings.Join(missingFields(op.Input, body), ", "))
+		}
 		// Show logo above the form if available
-		tui.RenderLogo(os.Stdout, logoData)
+		tui.RenderLogo(cmd.ErrOrStderr(), logoData)
 		fields := tui.SchemaFields(op.Input)
 		form, results := tui.BuildForm(fields, body)
 		if form != nil {
-			if err := form.Run(); err != nil {
+			accessible, _ := cmd.Flags().GetBool("accessible")
+			if err := form.WithOutput(cmd.ErrOrStderr()).WithAccessible(accessible).RunWithContext(cmd.Context()); err != nil {
 				return nil, err
 			}
-			body = tui.FinalizeResults(results)
+			if cmd.Annotations == nil {
+				cmd.Annotations = map[string]string{}
+			}
+			cmd.Annotations["prompted"] = "true"
+			normalized, err := tui.NormalizeForm(fields, body, results)
+			body = normalized
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	return body, nil
+	return tui.ValidateInput(op.Input, body)
 }
 
 // hasMissingRequired checks if any required fields from the schema are missing from body.

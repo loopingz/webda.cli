@@ -27,15 +27,31 @@ ln -s /usr/local/bin/myapp /usr/local/bin/mystaging
 
 ## Configuration
 
-Create `~/.webdacli/config.yaml` with your host mappings:
+Configure a named profile using the setup wizard, or supply values directly:
+
+```bash
+webda-cli setup
+webda-cli setup --name staging --url https://staging.example.com
+webda-cli profiles
+webda-cli --profile staging explore
+```
+
+Host mappings are stored in `~/.webdacli/config.yaml`:
 
 ```yaml
 myapp: https://app.example.com
-mystaging: https://staging.example.com
+staging: https://staging.example.com
 wlocal: http://localhost:18080
 ```
 
-Each key is a command name. When you run `myapp`, it connects to `https://app.example.com`.
+The binary name remains the default profile, so existing symlinks work. Use
+`--profile` to select another host without creating a symlink. Setup changes shell
+configuration only when you choose completion installation or pass
+`--install-completion`.
+
+Help, version, setup, profiles, completion, and cached input skeletons work without
+signing in or contacting the server. Operation help uses the last cached schema;
+run `refresh-operations` to update it.
 
 ## Authentication
 
@@ -69,13 +85,61 @@ myapp authorizer-service test-operations --user alice
 
 ### Interactive TUI
 
-When required fields are missing, an interactive TUI form is displayed to collect input. You can also force the form with `--interactive` / `-i`:
+Run `myapp explore`, or run `myapp` without arguments in a terminal, to browse
+operations. The explorer provides fuzzy search across names and descriptions,
+operation details, favorites, and recent operation names. Wide terminals show
+list and details side by side; narrow terminals stack them.
+
+- `/`: search operations; `↑` / `↓`: navigate; `Enter`: configure.
+- `f`: toggle a favorite; `c`: copy a shell command; `q`: quit.
+- Forms show required fields first, optional fields under **More options**, schema
+  defaults/examples, validation, and a redacted request review before execution.
+- In results, use `↑` / `↓` or page keys to scroll, `/` to search lines, `t` for
+  tables, `j` for JSON, `e` to edit retained inputs, and `Esc` to go back.
+- During execution, `Esc` cancels the local request. Cancellation does not undo
+  work that the server may already have started. Failed mutations are not
+  automatically retried.
+
+When required flags are missing, direct commands also offer a form if stdin and
+stderr are terminals. Force it with `--interactive` / `-i`, or disable prompting
+with `--no-interactive`. Missing input in scripts produces an error with the
+required flag names. `--accessible` uses plain prompts suitable for screen
+readers; `NO_COLOR=1` disables color.
 
 ```bash
-myapp authorizer-service test-operations           # TUI triggers (--user is required)
-myapp authorizer-service test-operations -i         # force TUI even with all flags
-myapp authorizer-service test-operations --user foo # no TUI, executes directly
+myapp authorizer-service test-operations -i
+myapp authorizer-service test-operations --user alice --no-interactive
+myapp explore --accessible
 ```
+
+Forms preserve numeric and enum types, support JSON arrays/objects, and omit
+untouched optional fields. Optional booleans offer **Leave unset**, **Yes**, and
+**No**, preserving the distinction between omission and explicit false. Local
+validation covers inline types, required fields, enums, numeric ranges, string
+length/pattern, array sizes/items, and additionalProperties=false; the server
+validates schema references and other constraints.
+
+Operations with `destructive: true` metadata require a review in interactive mode
+or an explicit `--yes` on a direct command. Request previews and copied commands
+redact password/writeOnly fields and names containing password, token, or secret.
+History contains operation names and favorites only, never request inputs.
+
+### Output and automation
+
+```bash
+myapp sync aws --input input.json --output json --timeout 15s
+cat input.json | myapp sync aws --input - --no-interactive --output raw
+myapp users list --output table
+```
+
+Output formats are `json`, `table`, `raw`, and the default `pretty`. Tables accept
+an object or an array of objects; `pretty` formats JSON and passes other responses
+through. HTTP failures return a nonzero exit status and diagnostics go to stderr.
+Authentication refresh messages do not pollute stdout. `--timeout` bounds operation
+requests and operation discovery.
+
+Array and object flags accept JSON. Schema fields that conflict with built-in
+flags use a `field-` prefix, for example `--field-input` or `--field-output`.
 
 ### JSON Skeleton and File Input
 
@@ -110,21 +174,29 @@ myapp refresh-operations    # re-fetch operations from the server
 
 ## Shell Completion
 
-Shell completion is **automatically installed** on first launch. The CLI detects your shell (zsh, bash, or fish) and installs the appropriate completion script.
+Install completion explicitly:
 
-- **zsh**: Writes to `~/.webdacli/completions/_<name>` and adds `fpath` to `~/.zshrc`
-- **bash**: Writes to `~/.webdacli/completions/<name>.bash` and sources it from `~/.bashrc`
-- **fish**: Writes to `~/.config/fish/completions/<name>.fish`
+```bash
+myapp completion install
+# Or opt in during setup:
+myapp setup --name myapp --url https://app.example.com --install-completion
+```
 
-After the first launch, restart your shell (or `source ~/.zshrc`) to activate completion.
-
-To manually regenerate:
+This detects zsh, bash, or fish, writes completion scripts, and configures shell
+startup. Restart your shell to activate it. For manual installation:
 
 ```bash
 myapp completion zsh > ~/.webdacli/completions/_myapp
 myapp completion bash > ~/.webdacli/completions/myapp.bash
 myapp completion fish > ~/.config/fish/completions/myapp.fish
 ```
+
+## Updates
+
+By default the CLI reports incompatible server version requirements and suggests
+`myapp update`. Set `update: prompt` in config to ask before updating in an
+interactive terminal, or `update: silent` to explicitly enable automatic updates.
+Local help and version commands never trigger updates.
 
 ## Logo
 
@@ -148,4 +220,5 @@ This runs `go vet`, `golangci-lint`, and `go test -race` automatically.
 | `~/.webdacli/<name>.tok` | Authentication tokens |
 | `~/.webdacli/<name>.operations` | Cached operations spec |
 | `~/.webdacli/<name>.logo` | Cached logo image |
+| `~/.webdacli/<profile>.history.json` | Favorite and recent operation names |
 | `~/.webdacli/completions/` | Shell completion scripts |
