@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // DetectImageProtocol returns "iterm2", "kitty", or "" based on terminal env vars.
@@ -32,10 +34,21 @@ func LogoCachePath(configDir, name string) string {
 // FetchAndCacheLogo downloads the logo from url and caches it to disk.
 // Returns the image bytes, or cached bytes if already present.
 func FetchAndCacheLogo(url, cachePath string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return FetchAndCacheLogoWithContext(ctx, url, cachePath)
+}
+
+// FetchAndCacheLogoWithContext bounds downloads to the caller's request context.
+func FetchAndCacheLogoWithContext(ctx context.Context, url, cachePath string) ([]byte, error) {
 	if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 {
 		return data, nil
 	}
-	resp, err := http.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

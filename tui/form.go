@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,6 +19,10 @@ type FieldDef struct {
 	Required    bool
 	Enum        []string
 	Format      string
+	Default     any
+	Example     string
+	EnumValues  []any
+	Schema      map[string]any
 }
 
 const simpleSchemaThreshold = 5
@@ -45,6 +52,8 @@ func SchemaFields(schema map[string]any) []FieldDef {
 		}
 		f := FieldDef{
 			Name:     name,
+			Schema:   prop,
+			Default:  prop["default"],
 			Required: required[name],
 		}
 		if t, ok := prop["type"].(string); ok {
@@ -56,13 +65,23 @@ func SchemaFields(schema map[string]any) []FieldDef {
 		if format, ok := prop["format"].(string); ok {
 			f.Format = format
 		}
+		if examples, ok := prop["examples"].([]any); ok && len(examples) > 0 {
+			f.Example = fmt.Sprint(examples[0])
+		}
 		if enumVals, ok := prop["enum"].([]any); ok {
+			f.EnumValues = enumVals
 			for _, e := range enumVals {
 				f.Enum = append(f.Enum, fmt.Sprint(e))
 			}
 		}
 		fields = append(fields, f)
 	}
+	sort.Slice(fields, func(i, j int) bool {
+		if fields[i].Required != fields[j].Required {
+			return fields[i].Required
+		}
+		return fields[i].Name < fields[j].Name
+	})
 	return fields
 }
 
@@ -79,37 +98,63 @@ func BuildForm(fields []FieldDef, prefilled map[string]any) (*huh.Form, map[stri
 		results[k] = v
 	}
 
-	var formFields []huh.Field
-	for _, f := range fields {
-		formFields = append(formFields, buildField(f, results))
+	for i := range fields {
+		f := &fields[i]
+		if _, ok := results[f.Name]; !ok && f.Default != nil {
+			results[f.Name] = f.Default
+		}
 	}
-
-	if len(formFields) == 0 {
+	var required, optional []huh.Field
+	for i := range fields {
+		f := &fields[i]
+		field := buildField(*f, results)
+		if f.Required {
+			required = append(required, field)
+		} else {
+			optional = append(optional, field)
+		}
+	}
+	if len(fields) == 0 {
 		return nil, results
 	}
-
-	if IsSimpleSchema(fields) {
-		form := huh.NewForm(huh.NewGroup(formFields...))
-		return form, results
-	}
-
-	// Multiple groups for complex schemas (batch 3 fields per group)
 	var groups []*huh.Group
-	for i := 0; i < len(formFields); i += 3 {
-		end := i + 3
-		if end > len(formFields) {
-			end = len(formFields)
+	addGroups := func(title string, items []huh.Field, hide func() bool) {
+		for i := 0; i < len(items); i += 4 {
+			end := min(i+4, len(items))
+			group := huh.NewGroup(items[i:end]...).Title(fmt.Sprintf("%s · step %d of %d", title, i/4+1, (len(items)+3)/4))
+			if hide != nil {
+				group = group.WithHideFunc(hide)
+			}
+			groups = append(groups, group)
 		}
-		groups = append(groups, huh.NewGroup(formFields[i:end]...))
 	}
+	addGroups("Required input", required, nil)
+	showOptional := len(required) == 0
+	for i := range fields {
+		f := &fields[i]
+		if !f.Required {
+			if _, ok := prefilled[f.Name]; ok {
+				showOptional = true
+			}
+		}
+	}
+	if len(optional) > 0 && len(required) > 0 {
+		groups = append(groups, huh.NewGroup(huh.NewConfirm().Title("More options").Description("Edit optional fields? Existing values and defaults are preserved when skipped.").Value(&showOptional)))
+	}
+	addGroups("Optional input", optional, func() bool { return !showOptional })
+
 	form := huh.NewForm(groups...)
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		form = form.WithTheme(huh.ThemeBase())
+	}
 	return form, results
 }
 
 func buildField(f FieldDef, results map[string]any) huh.Field {
 	title := f.Name
-	if f.Description != "" {
-		title = f.Description
+	description := f.Description
+	if f.Example != "" {
+		description += " Example: " + f.Example
 	}
 	if f.Required {
 		title += " *"
@@ -119,21 +164,43 @@ func buildField(f FieldDef, results map[string]any) huh.Field {
 	if len(f.Enum) > 0 {
 		options := make([]huh.Option[string], len(f.Enum))
 		for i, e := range f.Enum {
-			options[i] = huh.NewOption(e, e)
+			token := e
+			if i < len(f.EnumValues) {
+				data, _ := json.Marshal(f.EnumValues[i])
+				token = string(data)
+			}
+			options[i] = huh.NewOption(e, token)
 		}
 		initial := ""
-		if v, ok := results[f.Name].(string); ok {
-			initial = v
+		if v, ok := results[f.Name]; ok {
+			if len(f.EnumValues) > 0 {
+				data, _ := json.Marshal(v)
+				initial = string(data)
+			} else {
+				initial = fmt.Sprint(v)
+			}
+		}
+		if !f.Required {
+			options = append([]huh.Option[string]{huh.NewOption("Leave unset", "")}, options...)
 		}
 		results[f.Name] = initial
 		return huh.NewSelect[string]().
 			Title(title).
+			Description(description).
 			Options(options...).
 			Value(ptrTo(results, f.Name))
 	}
 
 	switch f.Type {
 	case "boolean":
+		if !f.Required {
+			initial := ""
+			if v, ok := results[f.Name]; ok {
+				initial = fmt.Sprint(v)
+			}
+			results[f.Name] = initial
+			return huh.NewSelect[string]().Title(title).Description(description).Options(huh.NewOption("Leave unset", ""), huh.NewOption("Yes", "true"), huh.NewOption("No", "false")).Value(ptrTo(results, f.Name))
+		}
 		initial := false
 		if v, ok := results[f.Name].(bool); ok {
 			initial = v
@@ -141,6 +208,7 @@ func buildField(f FieldDef, results map[string]any) huh.Field {
 		results[f.Name] = initial
 		return huh.NewConfirm().
 			Title(title).
+			Description(description).
 			Value(ptrToBool(results, f.Name))
 	case "integer", "number":
 		initial := ""
@@ -150,18 +218,42 @@ func buildField(f FieldDef, results map[string]any) huh.Field {
 		results[f.Name] = initial
 		return huh.NewInput().
 			Title(title).
+			Description(description).
 			Value(ptrTo(results, f.Name)).
 			Validate(func(s string) error {
 				if s == "" && !f.Required {
 					return nil
 				}
 				if f.Type == "integer" {
-					_, err := strconv.Atoi(s)
-					return err
+					v, err := strconv.ParseInt(s, 10, 64)
+					if err != nil {
+						return fmt.Errorf("enter a whole number")
+					}
+					return validateValue(f.Schema, v, f.Name)
 				}
-				_, err := strconv.ParseFloat(s, 64)
-				return err
+				v, err := strconv.ParseFloat(s, 64)
+				if err != nil {
+					return fmt.Errorf("enter a number")
+				}
+				return validateValue(f.Schema, v, f.Name)
 			})
+	case "object", "array":
+		initial := ""
+		if v, ok := results[f.Name]; ok {
+			data, _ := json.MarshalIndent(v, "", "  ")
+			initial = string(data)
+		}
+		results[f.Name] = initial
+		return huh.NewText().Title(title).Description(description + " (JSON)").Value(ptrTo(results, f.Name)).Validate(func(s string) error {
+			if s == "" && !f.Required {
+				return nil
+			}
+			var v any
+			if err := json.Unmarshal([]byte(s), &v); err != nil {
+				return fmt.Errorf("enter valid JSON: %w", err)
+			}
+			return validateValue(f.Schema, v, f.Name)
+		})
 	default:
 		// string
 		initial := ""
@@ -171,18 +263,17 @@ func buildField(f FieldDef, results map[string]any) huh.Field {
 		results[f.Name] = initial
 		inp := huh.NewInput().
 			Title(title).
+			Description(description).
 			Value(ptrTo(results, f.Name))
 		if f.Format == "password" {
 			inp = inp.EchoMode(huh.EchoModePassword)
 		}
-		if f.Required {
-			inp = inp.Validate(func(s string) error {
-				if s == "" {
-					return fmt.Errorf("%s is required", f.Name)
-				}
+		inp = inp.Validate(func(s string) error {
+			if s == "" && !f.Required {
 				return nil
-			})
-		}
+			}
+			return validateValue(f.Schema, s, f.Name)
+		})
 		return inp
 	}
 }

@@ -68,7 +68,9 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	canRefresh := c.RefreshToken != "" && c.Sequence != ""
 	c.mu.RUnlock()
 	if needsRefresh {
-		_ = c.refresh(req.Context())
+		if err := c.refresh(req.Context()); err != nil {
+			return nil, fmt.Errorf("authentication refresh failed: %w", err)
+		}
 	}
 	c.attachAuth(req)
 	resp, err := http.DefaultClient.Do(req)
@@ -77,9 +79,20 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	}
 	if resp.StatusCode == http.StatusUnauthorized && canRefresh {
 		_ = resp.Body.Close()
-		if rerr := c.refresh(req.Context()); rerr == nil {
+		if rerr := c.refresh(req.Context()); rerr != nil {
+			return nil, fmt.Errorf("authentication refresh failed: %w", rerr)
+		} else {
 			// retry once
 			req2 := req.Clone(req.Context())
+			if req.GetBody != nil {
+				body, err := req.GetBody()
+				if err != nil {
+					return nil, err
+				}
+				req2.Body = body
+			} else if req.Body != nil {
+				return nil, errors.New("cannot replay request body after authentication refresh")
+			}
 			c.attachAuth(req2)
 			return http.DefaultClient.Do(req2)
 		}
@@ -103,10 +116,8 @@ func (c *Client) refresh(ctx context.Context) error {
 	if c.RefreshToken == "" || c.Sequence == "" {
 		return errors.New("missing refresh credentials")
 	}
-	fmt.Println("Refreshing access_token")
 	err := c.exchangeTokenWithTTL(ctx, c.BaseURL, c.RefreshToken, c.Sequence)
 	if err != nil {
-		fmt.Println("Cannot refresh access_token", err)
 		return err
 	}
 	// Persist updated tokens via store.
@@ -126,6 +137,7 @@ func (c *Client) backgroundLoop() {
 	for {
 		c.mu.RLock()
 		expiry := c.Expiry
+		refreshed := c.refreshedCh
 		c.mu.RUnlock()
 		var wait time.Duration
 		if expiry.IsZero() {
@@ -139,12 +151,14 @@ func (c *Client) backgroundLoop() {
 		select {
 		case <-c.stopCh:
 			return
-		case <-c.refreshedCh:
+		case <-refreshed:
 			// token just refreshed; loop again to adjust next wait
 			continue
 		case <-time.After(wait):
 			// proactive refresh
-			_ = c.refresh(context.Background())
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_ = c.refresh(ctx)
+			cancel()
 		}
 	}
 }

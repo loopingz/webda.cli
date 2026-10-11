@@ -17,10 +17,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/loopingz/webda-cli/tokenstore"
 	"github.com/loopingz/webda-cli/tui"
 	"github.com/loopingz/webda-cli/updater"
 	"github.com/loopingz/webda-cli/webdaclient"
+	"github.com/muesli/termenv"
 	browser "github.com/pkg/browser"
 	"github.com/spf13/cobra"
 	yaml "gopkg.in/yaml.v3"
@@ -36,13 +39,14 @@ const (
 // Operation is a simplified structure for dynamic commands.
 type Operation struct {
 	Name        string           `json:"name"`
+	Destructive bool             `json:"destructive,omitempty"`
 	Method      string           `json:"method"`
 	Path        string           `json:"path"`
 	Description string           `json:"description"`
 	Params      []map[string]any `json:"params"`
 	Raw         map[string]any   `json:"-"`
-	Input       map[string]any   `json:"-"` // JSON Schema for operation input
-	Output      map[string]any   `json:"-"` // JSON Schema for operation output
+	Input       map[string]any   `json:"input"`  // JSON Schema for operation input
+	Output      map[string]any   `json:"output"` // JSON Schema for operation output
 }
 
 // ServerInfo holds metadata from the operations response.
@@ -126,7 +130,7 @@ func acquireToken(ctx context.Context, name, baseURL string) (string, error) {
 		// fetch current user (cli may not be initialized yet during initial auth)
 		if cli != nil {
 			if user, err := fetchCurrentUser(ctx); err == nil {
-				fmt.Printf("Authenticated as user: %s (ID: %s)\n", user.Email, user.UUID)
+				fmt.Fprintf(os.Stderr, "Authenticated as user: %s (ID: %s)\n", user.Email, user.UUID)
 			}
 		}
 		// persist all
@@ -149,9 +153,9 @@ func acquireToken(ctx context.Context, name, baseURL string) (string, error) {
 	host, _ := os.Hostname()
 	callback := fmt.Sprintf("http://localhost:%d/auth", callbackPort)
 	authURL := strings.TrimRight(baseURL, "/") + "/auth/cli?callback=" + urlQueryEscape(callback) + "&name=" + urlQueryEscape(name+"-cli") + "&hostname=" + urlQueryEscape(host)
-	fmt.Printf("Opening browser for CLI authentication: %s\n", authURL)
+	fmt.Fprintf(os.Stderr, "Opening browser for CLI authentication: %s\n", authURL)
 	_ = browser.OpenURL(authURL)
-	fmt.Println("Waiting for authentication (Ctrl+C to cancel)...")
+	fmt.Fprintln(os.Stderr, "Waiting for authentication (Ctrl+C to cancel)...")
 	select {
 	case <-ctx.Done():
 		_ = srv.Shutdown(context.Background())
@@ -221,7 +225,11 @@ type User struct {
 
 func fetchCurrentUser(ctx context.Context) (User, error) {
 	var u User
-	resp, err := cli.Request("GET", "/auth/me", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cli.BaseURL+"/auth/me", nil)
+	if err != nil {
+		return u, err
+	}
+	resp, err := cli.Do(req)
 	if err != nil {
 		return u, err
 	}
@@ -236,7 +244,11 @@ func fetchCurrentUser(ctx context.Context) (User, error) {
 }
 
 func fetchOperations(ctx context.Context, name string) ([]Operation, ServerInfo, error) {
-	resp, err := cli.Request("GET", "/operations", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cli.BaseURL+"/operations", nil)
+	if err != nil {
+		return nil, ServerInfo{}, err
+	}
+	resp, err := cli.Do(req)
 	if err != nil {
 		return nil, ServerInfo{}, err
 	}
@@ -244,9 +256,16 @@ func fetchOperations(ctx context.Context, name string) ([]Operation, ServerInfo,
 	if resp.StatusCode >= 300 {
 		return nil, ServerInfo{}, fmt.Errorf("operations fetch failed: %s", resp.Status)
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, ServerInfo{}, err
+	}
+	ops, info, err := parseOperationsResponse(body)
+	if err != nil {
+		return nil, ServerInfo{}, err
+	}
 	_ = os.WriteFile(opsPath(name), body, 0o600)
-	return parseOperationsResponse(body)
+	return ops, info, nil
 }
 
 // parseOperationsResponse parses the full /operations response, returning
@@ -369,150 +388,175 @@ func urlQueryEscape(s string) string {
 }
 
 func buildRootCommand(name, baseURL string) *cobra.Command {
-	cmd := &cobra.Command{Use: name, Short: fmt.Sprintf("CLI for %s", baseURL)}
+	short := "Webda dynamic CLI"
+	if baseURL != "" {
+		short = fmt.Sprintf("CLI for %s", baseURL)
+	}
+	cmd := &cobra.Command{Use: name, Short: short, Long: short + "\n\nRun setup to configure a profile, explore to browse operations, or use a command directly."}
 	return cmd
 }
 
 func main() {
+	if err := runCLI(); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+}
+
+func runCLI() error {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		lipgloss.SetColorProfile(termenv.Ascii)
+	}
 	invoked := filepath.Base(os.Args[0])
-	// If invoked via 'go run', fallback to first arg after program name as logical name
-	if strings.HasPrefix(invoked, "go-build") || strings.HasSuffix(invoked, ".tmp") {
-		if len(os.Args) > 1 {
-			invoked = os.Args[1]
-		}
+	args := os.Args[1:]
+	profile := requestedProfile(args)
+	if profile == "" {
+		profile = invoked
 	}
-	cfg, err := loadConfig()
+	if filepath.Base(profile) != profile || profile == "." || profile == ".." || strings.ContainsAny(profile, "\\/ ") {
+		return fmt.Errorf("invalid profile name %q", profile)
+	}
+	cfg, configErr := loadConfig()
+	baseURL := cfg[profile]
+	root := buildRootCommand(invoked, baseURL)
+	root.SilenceErrors = true
+	root.SilenceUsage = true
+	root.PersistentFlags().String("profile", profile, "named server profile (defaults to binary name)")
+	timeout, err := requestedTimeout(args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot load config: %v\nCreate %s with mappings like: wc: https://demo.webda.io\n", err, filepath.Join(configDir(), configFileName))
-		os.Exit(1)
+		return err
 	}
-	baseURL := cfg[invoked]
+	root.PersistentFlags().Duration("timeout", timeout, "request timeout")
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		timeout, _ := cmd.Flags().GetDuration("timeout")
+		if timeout <= 0 {
+			return fmt.Errorf("--timeout must be positive")
+		}
+		return nil
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	root.SetContext(ctx)
+	addLocalCommands(root, invoked, cfg)
+	ops, serverInfo, _ := cachedOperations(profile)
+	logoData, _ := os.ReadFile(tui.LogoCachePath(configDir(), profile))
+	originalHelp := root.HelpFunc()
+	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		if terminalOutput(cmd.OutOrStdout()) {
+			tui.RenderLogo(cmd.OutOrStdout(), logoData)
+		}
+		originalHelp(cmd, args)
+	})
+	root.AddCommand(newVersionCmd(baseURL, &serverInfo))
+	if localInvocation(args) {
+		buildCommandTree(root, nil, baseURL, ops, logoData)
+		addExplorer(root, profile, baseURL, ops)
+		root.AddCommand(&cobra.Command{Use: "auth", Short: "Sign in to the selected profile"}, &cobra.Command{Use: "whoami", Short: "Show current user"}, &cobra.Command{Use: "update", Short: "Update CLI"}, &cobra.Command{Use: "refresh-operations", Short: "Refresh cached operation definitions"})
+		return root.Execute()
+	}
+	if configErr != nil {
+		return fmt.Errorf("cannot load configuration: %w; run %s setup", configErr, invoked)
+	}
 	if baseURL == "" {
-		fmt.Fprintf(os.Stderr, "Command name '%s' not found in config. Available: %s\n", invoked, strings.Join(mapKeys(cfg), ", "))
-		os.Exit(1)
+		return fmt.Errorf("unknown profile %q; run %s profiles or %s setup", profile, invoked, invoked)
 	}
 	tokenStore = tokenstore.NewTokenStore(configDir())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	sigCh := make(chan os.Signal, 2)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() { <-sigCh; cancel(); os.Exit(1) }()
-	// Ensure initial token (auth flow) prior to constructing dynamic operations; we keep legacy acquire for interactive auth.
-	_, err = acquireToken(ctx, invoked, baseURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Authentication failed: %v\n", err)
-		os.Exit(1) //nolint:gocritic
+	if firstCommand(args) == "auth" {
+		root.AddCommand(&cobra.Command{Use: "auth", Short: "Sign in to the selected profile", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+			if !terminalInput(cmd.InOrStdin()) || !terminalOutput(cmd.ErrOrStderr()) {
+				return fmt.Errorf("auth requires a terminal")
+			}
+			if _, err := tokenStore.Load(profile); err == nil {
+				if err := tokenStore.Delete(profile); err != nil {
+					return err
+				}
+			}
+			_, err := acquireToken(cmd.Context(), profile, baseURL)
+			return err
+		}})
+		return root.Execute()
 	}
-	cli, err = webdaclient.New(invoked, baseURL, tokenStore)
+	if err := authenticate(ctx, profile, baseURL); err != nil {
+		return err
+	}
+	cli, err = webdaclient.New(profile, baseURL, tokenStore)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot initialize client: %v\n", err)
-		os.Exit(1) //nolint:gocritic
+		return err
 	}
 	defer cli.Close()
-	root := buildRootCommand(invoked, baseURL)
-	root.PersistentFlags().Duration("timeout", 30*time.Second, "request timeout")
-	root.AddCommand(&cobra.Command{Use: "auth", Short: "Re-run authentication flow", RunE: func(cmd *cobra.Command, args []string) error {
-		// Delete token and reacquire
-		_ = tokenStore.Delete(invoked)
-		_, err := acquireToken(ctx, invoked, baseURL)
+	fetchCtx, fetchCancel := context.WithTimeout(ctx, timeout)
+	remoteOps, info, fetchErr := fetchOperations(fetchCtx, profile)
+	fetchCancel()
+	switch {
+	case fetchErr == nil:
+		ops = remoteOps
+		serverInfo = info
+	case len(ops) == 0:
+		return fetchErr
+	default:
+		fmt.Fprintf(os.Stderr, "Using cached operations: %v\n", fetchErr)
+	}
+	if serverInfo.LogoURL != "" && terminalOutput(os.Stderr) {
+		logoCtx, cancel := context.WithTimeout(ctx, timeout)
+		data, err := tui.FetchAndCacheLogoWithContext(logoCtx, serverInfo.LogoURL, tui.LogoCachePath(configDir(), profile))
+		cancel()
+		if err == nil {
+			logoData = data
+		}
+	}
+	buildCommandTree(root, cli, baseURL, ops, logoData)
+	root.AddCommand(&cobra.Command{Use: "whoami", Short: "Show current user info", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		timeout, _ := cmd.Flags().GetDuration("timeout")
+		ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+		defer cancel()
+		user, err := fetchCurrentUser(ctx)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(user)
+	}})
+	root.AddCommand(&cobra.Command{Use: "refresh-operations", Short: "Re-fetch operations spec", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		timeout, _ := cmd.Flags().GetDuration("timeout")
+		ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+		defer cancel()
+		ops, _, err := fetchOperations(ctx, profile)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Fetched %d operations\n", len(ops))
 		return err
 	}})
-	root.AddCommand(&cobra.Command{Use: "whoami", Short: "Show current user info", RunE: func(cmd *cobra.Command, args []string) error {
-		if _, err := tokenStore.Load(invoked); err != nil {
-			return errors.New("no access token; run auth")
-		}
-		user, err := fetchCurrentUser(cmd.Context())
+	root.AddCommand(&cobra.Command{Use: "update", Short: "Update CLI explicitly", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		tag, err := updater.Update(serverInfo.CLIDownloadURL)
 		if err != nil {
 			return err
 		}
-		b, _ := json.MarshalIndent(user, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Updated to %s\n", tag)
+		return err
 	}})
-	root.AddCommand(&cobra.Command{Use: "refresh-operations", Short: "Re-fetch operations spec", RunE: func(cmd *cobra.Command, args []string) error {
-		ops, _, err := fetchOperations(cmd.Context(), invoked)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("Fetched %d operations\n", len(ops))
-		return nil
-	}})
-	// Fetch operations for dynamic commands
-	var logoData []byte
-	var serverInfo ServerInfo
-	if ops, info, err := fetchOperations(ctx, invoked); err == nil {
-		serverInfo = info
-		if info.LogoURL != "" {
-			cachePath := tui.LogoCachePath(configDir(), invoked)
-			logoData, _ = tui.FetchAndCacheLogo(info.LogoURL, cachePath)
-		}
-		buildCommandTree(root, cli, baseURL, ops, logoData)
-	} else {
-		fmt.Fprintf(os.Stderr, "Warning: cannot fetch operations: %v\n", err)
-	}
-	// Check if CLI version satisfies server requirement
 	if needs, _ := updater.NeedsUpdate(version, serverInfo.CLIVersionRange); needs {
-		updateMode := cfg["update"]
-		if updateMode == "" {
-			updateMode = "silent"
-		}
-		downloadURL := serverInfo.CLIDownloadURL
-		switch updateMode {
-		case "silent":
-			if tag, err := updater.Update(downloadURL); err == nil {
-				fmt.Fprintf(os.Stderr, "Updated to %s\n", tag)
-				if err := updater.SelfReExec(); err != nil {
-					fmt.Fprintf(os.Stderr, "Re-exec failed: %v. Please re-run the command.\n", err)
-					os.Exit(0) //nolint:gocritic
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: auto-update failed: %v\n", err)
+		mode := cfg["update"]
+		if mode == "prompt" && terminalInput(os.Stdin) && terminalOutput(os.Stderr) {
+			accepted := false
+			form := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Update CLI to match server requirements?").Value(&accepted)))
+			if err := form.RunWithContext(ctx); err != nil {
+				return err
 			}
-		case "prompt":
-			fmt.Fprintf(os.Stderr, "Update available (requires %s). Update now? [Y/n] ", serverInfo.CLIVersionRange)
-			var answer string
-			_, _ = fmt.Scanln(&answer)
-			if answer == "" || strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes") {
-				if tag, err := updater.Update(downloadURL); err == nil {
-					fmt.Fprintf(os.Stderr, "Updated to %s\n", tag)
-					if err := updater.SelfReExec(); err != nil {
-						fmt.Fprintf(os.Stderr, "Re-exec failed: %v. Please re-run the command.\n", err)
-						os.Exit(0) //nolint:gocritic
-					}
-				} else {
-					fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
-				}
+			if accepted {
+				mode = "silent"
 			}
-		case "warn":
-			fmt.Fprintf(os.Stderr, "Warning: CLI version %s is outdated (server requires %s). Run '%s update' to upgrade.\n", version, serverInfo.CLIVersionRange, invoked)
 		}
-	}
-
-	root.AddCommand(newVersionCmd(baseURL, &serverInfo))
-	root.AddCommand(&cobra.Command{Use: "update", Short: "Update CLI to latest version", RunE: func(cmd *cobra.Command, args []string) error {
-		downloadURL := serverInfo.CLIDownloadURL
-		tag, err := updater.Update(downloadURL)
-		if err != nil {
-			return err
+		if mode == "silent" {
+			if _, err := updater.Update(serverInfo.CLIDownloadURL); err != nil {
+				return err
+			}
+			return updater.SelfReExec()
 		}
-		fmt.Printf("Updated to %s\n", tag)
-		return nil
-	}})
-
-	// Auto-install shell completion on first launch
-	installShellCompletion(root, invoked)
-
-	// Set up logo display in help
-	if len(logoData) > 0 {
-		originalHelp := root.HelpFunc()
-		root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
-			tui.RenderLogo(os.Stdout, logoData)
-			originalHelp(cmd, args)
-		})
+		fmt.Fprintf(os.Stderr, "CLI update available (requires %s). Run %s update.\n", serverInfo.CLIVersionRange, invoked)
 	}
-	if err := root.Execute(); err != nil {
-		os.Exit(1)
-	}
+	root.AddCommand(&cobra.Command{Use: "auth", Short: "Sign in to the selected profile", RunE: func(_ *cobra.Command, _ []string) error { return fmt.Errorf("run auth as a standalone command") }})
+	addExplorer(root, profile, baseURL, ops)
+	return root.Execute()
 }
 
 const completionMarker = ".completion-installed"
