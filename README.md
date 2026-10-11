@@ -8,6 +8,42 @@ A dynamic CLI client for [Webda](https://webda.io) applications. The binary name
 
 ## Installation
 
+### Release installer (no Go SDK)
+
+For macOS and Linux on Intel/AMD or ARM64, download the installer and run it:
+
+```bash
+curl -fsSL https://github.com/loopingz/webda.cli/releases/latest/download/install.sh -o install.sh
+sh install.sh
+```
+
+Install and configure a client for a server in one step:
+
+```bash
+sh install.sh --server https://app.example.com --name myapp
+myapp explore
+```
+
+The installer verifies the binary's SHA-256 checksum and installs it to
+`~/.local/bin` without requiring root access. Add this directory to your `PATH`
+if it is not already there. `--name` sets both the executable and profile name;
+`--server` saves the server URL through the CLI's setup command. Authentication
+happens when you first use the client, so installation does not open a browser.
+
+Additional options:
+
+```bash
+sh install.sh --version v1.2.0 --install-dir "$HOME/bin"
+sh install.sh --server https://staging.example.com --name staging --install-completion
+```
+
+Shell completion installation is opt-in. The script requires `curl` and either
+`sha256sum` (Linux) or `shasum` (macOS), and supports `--help`.
+The installer and `checksums.txt` will be included in releases containing this
+change; older releases such as v1.1.0 do not provide them.
+
+### Install with Go
+
 Requires Go 1.25 or newer. Once a release containing the corrected module path is
 published, install with:
 

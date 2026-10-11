@@ -10,6 +10,20 @@ permissions:
   contents: read
 
 jobs:
+  shell-lint:
+    name: Shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Check installer
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          sh -n install.sh
+          shellcheck install.sh
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
