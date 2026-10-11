@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/loopingz/webda-cli/tokenstore"
-	"github.com/loopingz/webda-cli/webdaclient"
+	"github.com/loopingz/webda.cli/tokenstore"
+	"github.com/loopingz/webda.cli/webdaclient"
 	"github.com/spf13/cobra"
 )
 

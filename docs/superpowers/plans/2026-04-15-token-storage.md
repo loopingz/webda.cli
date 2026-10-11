@@ -904,7 +904,7 @@ git commit -m "feat: add NewTokenStore factory with keyring > ssh-agent > machin
 
 - [ ] **Step 1: Add tokenstore import and global variable**
 
-Add `"github.com/loopingz/webda-cli/tokenstore"` to the import block in `main.go`.
+Add `"github.com/loopingz/webda.cli/tokenstore"` to the import block in `main.go`.
 
 Add a global variable near the existing `var cli *webdaclient.Client`:
 
@@ -1073,7 +1073,7 @@ Delete from `webdaclient/client.go`:
 
 Add the tokenstore import:
 ```go
-"github.com/loopingz/webda-cli/tokenstore"
+"github.com/loopingz/webda.cli/tokenstore"
 ```
 
 Remove now-unused imports (`path/filepath`, `strings` if unused after cleanup).

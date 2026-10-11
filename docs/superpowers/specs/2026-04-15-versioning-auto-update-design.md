@@ -44,14 +44,14 @@ The `/operations` response gains optional fields:
   "version": "2.1.0",
   "cli": {
     "version_range": ">=1.2.0",
-    "download_url": "https://github.com/loopingz/webda-cli/releases"
+    "download_url": "https://github.com/loopingz/webda.cli/releases"
   }
 }
 ```
 
 - `version` — server's own version (informational)
 - `cli.version_range` — semver constraint the CLI must satisfy (e.g., `>=1.2.0`, `>=1.0.0 <2.0.0`)
-- `cli.download_url` — base URL for downloading updates. Defaults to `https://github.com/loopingz/webda-cli/releases` if not provided.
+- `cli.download_url` — base URL for downloading updates. Defaults to `https://github.com/loopingz/webda.cli/releases` if not provided.
 
 All fields are optional. Missing `cli` or `cli.version_range` means no version check.
 
@@ -89,7 +89,7 @@ Triggered after fetching operations, before executing any command:
 ### Performing the Update
 
 1. Determine download source: `cli.download_url` from server, or default GitHub releases URL
-2. If GitHub releases: query `GET https://api.github.com/repos/loopingz/webda-cli/releases/latest` to find the latest release tag and assets
+2. If GitHub releases: query `GET https://api.github.com/repos/loopingz/webda.cli/releases/latest` to find the latest release tag and assets
 3. Find asset matching `webda-cli-{GOOS}-{GOARCH}` (append `.exe` on Windows)
 4. Download the asset to a temp file in the same directory as the running binary
 5. Make the temp file executable (`chmod 0755`)

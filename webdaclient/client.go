@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/loopingz/webda-cli/tokenstore"
+	"github.com/loopingz/webda.cli/tokenstore"
 )
 
 const (

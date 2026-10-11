@@ -14,7 +14,7 @@ import (
 	semver "github.com/Masterminds/semver/v3"
 )
 
-const defaultGitHubRepo = "loopingz/webda-cli"
+const defaultGitHubRepo = "loopingz/webda.cli"
 
 // NeedsUpdate returns true if currentVersion does not satisfy the constraint.
 // Returns false for dev builds or empty constraints.
@@ -55,7 +55,7 @@ type GHAsset struct {
 }
 
 // FetchLatestRelease fetches the latest release info from GitHub (or a custom base URL).
-// downloadURL should be like "https://github.com/loopingz/webda-cli/releases" or empty for default.
+// downloadURL should be like "https://github.com/loopingz/webda.cli/releases" or empty for default.
 func FetchLatestRelease(downloadURL string) (*GHRelease, error) {
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", defaultGitHubRepo)
 	if downloadURL != "" && !strings.Contains(downloadURL, "github.com/"+defaultGitHubRepo) {

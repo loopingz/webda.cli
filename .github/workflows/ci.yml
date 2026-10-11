@@ -10,6 +10,36 @@ permissions:
   contents: read
 
 jobs:
+  windows-installer:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o installer-test-client.exe .
+      - name: Test PowerShell 7 installer
+        shell: pwsh
+        run: ./install_windows_test.ps1 -Binary ./installer-test-client.exe
+      - name: Test Windows PowerShell 5.1 installer
+        shell: powershell
+        run: ./install_windows_test.ps1 -Binary ./installer-test-client.exe
+
+  shell-lint:
+    name: Shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Check installer
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          sh -n install.sh
+          shellcheck install.sh
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

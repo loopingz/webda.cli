@@ -1,28 +1,115 @@
 # webda-cli
 
-[![CI](https://github.com/loopingz/webda-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/loopingz/webda-cli/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/loopingz/webda-cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/loopingz/webda-cli/actions/workflows/codeql.yml)
-[![codecov](https://codecov.io/gh/loopingz/webda-cli/graph/badge.svg)](https://codecov.io/gh/loopingz/webda-cli)
+[![CI](https://github.com/loopingz/webda.cli/actions/workflows/ci.yml/badge.svg)](https://github.com/loopingz/webda.cli/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/loopingz/webda.cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/loopingz/webda.cli/actions/workflows/codeql.yml)
+[![codecov](https://codecov.io/gh/loopingz/webda.cli/graph/badge.svg)](https://codecov.io/gh/loopingz/webda.cli)
 
 A dynamic CLI client for [Webda](https://webda.io) applications. The binary name determines which remote host it connects to, configured via `~/.webdacli/config.yaml`.
 
 ## Installation
 
+### Release installer (no Go SDK)
+
+For macOS and Linux on Intel/AMD or ARM64, run:
+
 ```bash
-go install github.com/loopingz/webda-cli@latest
+curl -fsSL https://github.com/loopingz/webda.cli/releases/latest/download/install.sh | sh
 ```
 
-Or build from source:
+Install and configure a client for a server in one step:
 
 ```bash
-go build -o myapp .
-cp myapp /usr/local/bin/myapp
+curl -fsSL https://github.com/loopingz/webda.cli/releases/latest/download/install.sh | sh -s -- --server https://app.example.com --name myapp
+myapp explore
 ```
 
-Create symlinks for each remote host you want to connect to — the binary name maps to the config key:
+The installer verifies the binary's SHA-256 checksum and installs it to
+`~/.local/bin` without requiring root access. Add this directory to your `PATH`
+if it is not already there. `--name` sets both the executable and profile name;
+`--server` saves the server URL through the CLI's setup command. Authentication
+happens when you first use the client, so installation does not open a browser.
+
+Additional options:
 
 ```bash
-ln -s /usr/local/bin/myapp /usr/local/bin/mystaging
+curl -fsSL https://github.com/loopingz/webda.cli/releases/latest/download/install.sh -o install.sh
+sh install.sh --version v1.2.0 --install-dir "$HOME/bin"
+sh install.sh --server https://staging.example.com --name staging --install-completion
+```
+
+Shell completion installation is opt-in. The script requires `curl` and either
+`sha256sum` (Linux) or `shasum` (macOS), and supports `--help`.
+The installer and `checksums.txt` will be included in releases containing this
+change; older releases such as v1.1.0 do not provide them.
+
+### Windows (no Go SDK)
+
+In Windows PowerShell 5.1 or PowerShell 7, run:
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/loopingz/webda.cli/releases/latest/download/install.ps1)))
+```
+
+Install and configure a named client in one command:
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/loopingz/webda.cli/releases/latest/download/install.ps1))) -Server https://app.example.com -Name myapp
+```
+
+The installer selects the native AMD64 or ARM64 binary, verifies its SHA-256
+checksum, and installs it to `%LOCALAPPDATA%\WebdaCLI` without administrator
+access. It adds the directory to `PATH` for the current session. For future
+terminals, open **Edit environment variables for your account**, edit the user
+**Path**, and add `%LOCALAPPDATA%\WebdaCLI`.
+
+Options include `-Version v1.2.0`, `-InstallDir "$HOME\bin"`, and
+`-InstallCompletion` (requires `-Server`). Authentication happens when you first
+use the client, for example `myapp explore`. The one-liner invokes the downloaded
+script as a script block so these parameters can be passed directly.
+
+The PowerShell installer will be available in the next release containing this
+change. You can also download `webda-cli-windows-amd64.exe` or
+`webda-cli-windows-arm64.exe` manually from the
+[latest release](https://github.com/loopingz/webda.cli/releases/latest).
+
+### Install with Go
+
+Requires Go 1.25 or newer. Once a release containing the corrected module path is
+published, install with:
+
+```bash
+go install github.com/loopingz/webda.cli@latest
+```
+
+This installs the command as `webda.cli` in `GOBIN`, or `$(go env GOPATH)/bin` when
+`GOBIN` is unset. Add that directory to your `PATH`, then run `webda.cli setup`.
+
+**The v1.1.0 release cannot be installed with this command:** it declares
+`github.com/loopingz/webda-cli` as its module path, which differs from the actual
+repository path. Use a source build until a corrected release is available:
+
+```bash
+git clone https://github.com/loopingz/webda.cli.git
+cd webda.cli
+go build -o webda-cli .
+./webda-cli setup
+```
+
+To install the source-built binary under a custom command name:
+
+```bash
+mkdir -p "$HOME/.local/bin"
+install -m 755 webda-cli "$HOME/.local/bin/myapp"
+```
+
+Add `$HOME/.local/bin` to your `PATH`. The binary name is the default profile name;
+configure it with `myapp setup --name myapp --url https://app.example.com`.
+You can also select an existing profile with `myapp --profile staging explore`.
+
+Optional aliases retain the binary-name profile behavior:
+
+```bash
+ln -s "$HOME/.local/bin/myapp" "$HOME/.local/bin/mystaging"
 ```
 
 ## Configuration
@@ -30,10 +117,10 @@ ln -s /usr/local/bin/myapp /usr/local/bin/mystaging
 Configure a named profile using the setup wizard, or supply values directly:
 
 ```bash
-webda-cli setup
-webda-cli setup --name staging --url https://staging.example.com
-webda-cli profiles
-webda-cli --profile staging explore
+webda.cli setup
+webda.cli setup --name staging --url https://staging.example.com
+webda.cli profiles
+webda.cli --profile staging explore
 ```
 
 Host mappings are stored in `~/.webdacli/config.yaml`:

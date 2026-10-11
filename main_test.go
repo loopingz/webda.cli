@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/loopingz/webda-cli/tokenstore"
-	"github.com/loopingz/webda-cli/webdaclient"
+	"github.com/loopingz/webda.cli/tokenstore"
+	"github.com/loopingz/webda.cli/webdaclient"
 )
 
 func TestParseOperations_NormalMap(t *testing.T) {
