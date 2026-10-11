@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/loopingz/webda.cli/compare/v1.1.0...v1.2.0) (2026-10-11)
+
+
+### Features
+
+* add operation explorer and predictable CLI workflows ([#11](https://github.com/loopingz/webda.cli/issues/11)) ([7ac9c0f](https://github.com/loopingz/webda.cli/commit/7ac9c0f4962522b5ec8b29cf9764681d8fdebec5))
+* add release installer and fix Go installation ([#13](https://github.com/loopingz/webda.cli/issues/13)) ([1426053](https://github.com/loopingz/webda.cli/commit/1426053e7c15724f8363d74b68dbf146f4149c08))
+
 ## [1.1.0](https://github.com/loopingz/webda.cli/compare/v1.0.0...v1.1.0) (2026-04-16)
 
 
