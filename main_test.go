@@ -130,32 +130,6 @@ func TestParseOperationsResponse_InvalidJSON(t *testing.T) {
 	_ = info
 }
 
-func TestExtractToken_Valid(t *testing.T) {
-	body := []byte(`{"refresh_token":"abc123","sequence":42}`)
-	refresh, seq := extractToken(body)
-	if refresh != "abc123" {
-		t.Errorf("expected refresh 'abc123', got %q", refresh)
-	}
-	if seq != 42 {
-		t.Errorf("expected seq 42, got %d", seq)
-	}
-}
-
-func TestExtractToken_InvalidJSON(t *testing.T) {
-	refresh, seq := extractToken([]byte("not json"))
-	if refresh != "" || seq != 0 {
-		t.Errorf("expected empty for invalid JSON, got %q %d", refresh, seq)
-	}
-}
-
-func TestExtractToken_MissingFields(t *testing.T) {
-	body := []byte(`{"other":"field"}`)
-	refresh, seq := extractToken(body)
-	if refresh != "" || seq != 0 {
-		t.Errorf("expected empty for missing fields, got %q %d", refresh, seq)
-	}
-}
-
 func TestDeriveOpName(t *testing.T) {
 	tests := []struct {
 		method, path, want string
@@ -457,32 +431,6 @@ func TestInstallShellCompletion_UnknownShell(t *testing.T) {
 
 // --- Integration tests using mock Webda server ---
 
-func TestExchangeToken_Success(t *testing.T) {
-	srv := newMockWebdaServer()
-	defer srv.Close()
-
-	access, seq, err := exchangeToken(context.Background(), srv.URL, "valid-refresh", 1)
-	if err != nil {
-		t.Fatalf("exchangeToken failed: %v", err)
-	}
-	if access != "mock-access-token" {
-		t.Errorf("expected mock-access-token, got %q", access)
-	}
-	if seq != 2 {
-		t.Errorf("expected seq 2, got %d", seq)
-	}
-}
-
-func TestExchangeToken_Unauthorized(t *testing.T) {
-	srv := newMockWebdaServer()
-	defer srv.Close()
-
-	_, _, err := exchangeToken(context.Background(), srv.URL, "bad-token", 1)
-	if err == nil {
-		t.Fatal("expected error for bad token")
-	}
-}
-
 func TestFetchCurrentUser_Success(t *testing.T) {
 	srv := newMockWebdaServer()
 	defer srv.Close()
@@ -493,7 +441,6 @@ func TestFetchCurrentUser_Success(t *testing.T) {
 	store.Save("test", tokenstore.TokenInfo{
 		RefreshToken: "rt",
 		AccessToken:  "at",
-		Sequence:     "1",
 	})
 
 	// Set up global cli
@@ -555,7 +502,6 @@ func TestFetchOperations_Success(t *testing.T) {
 	store.Save("test", tokenstore.TokenInfo{
 		RefreshToken: "rt",
 		AccessToken:  "at",
-		Sequence:     "1",
 	})
 
 	origCli := cli
@@ -669,27 +615,5 @@ func TestParseOperationsResponse_AllMetadataOptional(t *testing.T) {
 	}
 	if info.CLIDownloadURL != "" {
 		t.Errorf("expected empty CLIDownloadURL, got %q", info.CLIDownloadURL)
-	}
-}
-
-func TestAcquireToken_ExistingToken(t *testing.T) {
-	dir := t.TempDir()
-	store := tokenstore.NewMachineStore(dir)
-	store.Save("test", tokenstore.TokenInfo{
-		RefreshToken: "rt",
-		AccessToken:  "existing-access",
-		Sequence:     "1",
-	})
-
-	origStore := tokenStore
-	tokenStore = store
-	defer func() { tokenStore = origStore }()
-
-	access, err := acquireToken(context.Background(), "test", "https://unused.example.com")
-	if err != nil {
-		t.Fatalf("acquireToken failed: %v", err)
-	}
-	if access != "existing-access" {
-		t.Errorf("expected existing-access, got %q", access)
 	}
 }

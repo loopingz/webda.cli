@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,7 +14,6 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -24,7 +22,6 @@ import (
 	"github.com/loopingz/webda.cli/updater"
 	"github.com/loopingz/webda.cli/webdaclient"
 	"github.com/muesli/termenv"
-	browser "github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +29,6 @@ const (
 	configDirName  = ".webdacli"
 	configFileName = "config.yaml"
 	opsExt         = ".operations"
-	callbackPort   = 18181
 )
 
 // Operation is a simplified structure for dynamic commands.
@@ -72,136 +68,6 @@ func userHome() string {
 func configDir() string { return filepath.Join(userHome(), configDirName) }
 
 func opsPath(name string) string { return filepath.Join(configDir(), name+opsExt) }
-
-// acquireToken ensures tokens exist, returning the access token (and persisting all values).
-func acquireToken(ctx context.Context, name, baseURL string) (string, error) {
-	if ti, err := tokenStore.Load(name); err == nil && ti.AccessToken != "" {
-		return ti.AccessToken, nil
-	}
-	if err := os.MkdirAll(configDir(), 0o700); err != nil {
-		return "", err
-	}
-	type authResult struct {
-		Access string
-		Err    error
-	}
-	resultCh := make(chan authResult, 1)
-	srv := &http.Server{Addr: fmt.Sprintf(":%d", callbackPort)}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/auth", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Origin", baseURL)
-			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		body, _ := io.ReadAll(r.Body)
-		refresh, seq := extractToken(body)
-		if refresh == "" || seq == 0 {
-			http.Error(w, "invalid body", http.StatusBadRequest)
-			resultCh <- authResult{Err: errors.New("missing refresh_token or sequence")}
-			return
-		}
-		access, seq, err := exchangeToken(ctx, baseURL, refresh, seq)
-		if err != nil {
-			http.Error(w, "failed to exchange", http.StatusInternalServerError)
-			resultCh <- authResult{Err: err}
-			return
-		}
-		// fetch current user (cli may not be initialized yet during initial auth)
-		if cli != nil {
-			if user, err := fetchCurrentUser(ctx); err == nil {
-				fmt.Fprintf(os.Stderr, "Authenticated as user: %s (ID: %s)\n", user.Email, user.UUID)
-			}
-		}
-		// persist all
-		ti := tokenstore.TokenInfo{RefreshToken: refresh, AccessToken: access, Sequence: fmt.Sprintf("%d", seq)}
-		if err := tokenStore.Save(name, ti); err != nil {
-			http.Error(w, "cannot persist token", http.StatusInternalServerError)
-			resultCh <- authResult{Err: err}
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-		go func() { resultCh <- authResult{Access: access} }()
-		go func() { _ = srv.Shutdown(context.Background()) }()
-	})
-	srv.Handler = mux
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			resultCh <- authResult{Err: err}
-		}
-	}()
-	host, _ := os.Hostname()
-	callback := fmt.Sprintf("http://localhost:%d/auth", callbackPort)
-	authURL := strings.TrimRight(baseURL, "/") + "/auth/cli?callback=" + urlQueryEscape(callback) + "&name=" + urlQueryEscape(name+"-cli") + "&hostname=" + urlQueryEscape(host)
-	fmt.Fprintf(os.Stderr, "Opening browser for CLI authentication: %s\n", authURL)
-	_ = browser.OpenURL(authURL)
-	fmt.Fprintln(os.Stderr, "Waiting for authentication (Ctrl+C to cancel)...")
-	select {
-	case <-ctx.Done():
-		_ = srv.Shutdown(context.Background())
-		return "", ctx.Err()
-	case res := <-resultCh:
-		return res.Access, res.Err
-	case <-time.After(5 * time.Minute):
-		_ = srv.Shutdown(context.Background())
-		return "", errors.New("auth timeout")
-	}
-}
-
-// extractToken returns refresh_token and sequence.
-func extractToken(body []byte) (refresh string, seq int) {
-	var obj map[string]any
-	err := json.Unmarshal(body, &obj)
-	if err != nil {
-		return "", 0
-	}
-	if v, ok := obj["refresh_token"].(string); ok {
-		refresh = v
-	}
-	if seq == 0 { // maybe numeric
-		if v, ok := obj["sequence"].(float64); ok {
-			seq = int(v)
-		}
-	}
-	return refresh, seq
-}
-
-// exchangeToken exchanges the refresh token + sequence for an access token.
-func exchangeToken(ctx context.Context, baseURL string, refresh string, sequence int) (string, int, error) {
-	payload := map[string]any{"token": refresh, "sequence": sequence}
-	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, strings.TrimRight(baseURL, "/")+"/auth/refresh", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", 0, fmt.Errorf("exchange failed: %s %s", resp.Status, string(body))
-	}
-	body, _ := io.ReadAll(resp.Body)
-	var obj map[string]any
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return "", 0, err
-	}
-	access := ""
-	if v, ok := obj["access_token"].(string); ok && v != "" {
-		access = v
-	}
-	seq := 0
-	if v, ok := obj["sequence"].(float64); ok {
-		seq = int(v)
-	}
-	return access, seq, nil
-}
 
 // User represents /me response subset.
 type User struct {
@@ -438,7 +304,7 @@ func runCLI() error {
 	if localInvocation(args) {
 		buildCommandTree(root, nil, baseURL, ops, logoData)
 		addExplorer(root, profile, baseURL, ops)
-		root.AddCommand(&cobra.Command{Use: "auth", Short: "Sign in to the selected profile"}, &cobra.Command{Use: "whoami", Short: "Show current user"}, &cobra.Command{Use: "update", Short: "Update CLI"}, &cobra.Command{Use: "refresh-operations", Short: "Refresh cached operation definitions"})
+		root.AddCommand(stubCommand(newAuthCmd(authEnv{}, profile, prof)), stubCommand(newLogoutCmd(authEnv{}, profile, prof)), &cobra.Command{Use: "whoami", Short: "Show current user"}, &cobra.Command{Use: "update", Short: "Update CLI"}, &cobra.Command{Use: "refresh-operations", Short: "Refresh cached operation definitions"})
 		return root.Execute()
 	}
 	if configErr != nil {
@@ -448,22 +314,16 @@ func runCLI() error {
 		return fmt.Errorf("unknown profile %q; run %s profiles or %s setup", profile, invoked, invoked)
 	}
 	tokenStore = tokenstore.NewTokenStore(configDir())
-	if firstCommand(args) == "auth" {
-		root.AddCommand(&cobra.Command{Use: "auth", Short: "Sign in to the selected profile", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-			if !terminalInput(cmd.InOrStdin()) || !terminalOutput(cmd.ErrOrStderr()) {
-				return fmt.Errorf("auth requires a terminal")
-			}
-			if _, err := tokenStore.Load(profile); err == nil {
-				if err := tokenStore.Delete(profile); err != nil {
-					return err
-				}
-			}
-			_, err := acquireToken(cmd.Context(), profile, baseURL)
-			return err
-		}})
+	env := defaultAuthEnv()
+	switch firstCommand(args) {
+	case "auth":
+		root.AddCommand(newAuthCmd(env, profile, prof))
+		return root.Execute()
+	case "logout":
+		root.AddCommand(newLogoutCmd(env, profile, prof))
 		return root.Execute()
 	}
-	if err := authenticate(ctx, profile, baseURL); err != nil {
+	if err := authenticate(ctx, env, tokenStore, invoked, profile, prof, terminalInput(os.Stdin) && terminalOutput(os.Stderr)); err != nil {
 		return err
 	}
 	cli, err = webdaclient.New(profile, baseURL, tokenStore)
@@ -541,7 +401,7 @@ func runCLI() error {
 		}
 		fmt.Fprintf(os.Stderr, "CLI update available (requires %s). Run %s update.\n", serverInfo.CLIVersionRange, invoked)
 	}
-	root.AddCommand(&cobra.Command{Use: "auth", Short: "Sign in to the selected profile", RunE: func(_ *cobra.Command, _ []string) error { return fmt.Errorf("run auth as a standalone command") }})
+	root.AddCommand(stubCommand(newAuthCmd(env, profile, prof)), stubCommand(newLogoutCmd(env, profile, prof)))
 	addExplorer(root, profile, baseURL, ops)
 	return root.Execute()
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -183,14 +182,4 @@ func cachedOperations(name string) ([]Operation, ServerInfo, error) {
 		return nil, ServerInfo{}, err
 	}
 	return parseOperationsResponse(data)
-}
-func authenticate(ctx context.Context, name, baseURL string) error {
-	if ti, err := tokenStore.Load(name); err == nil && ti.AccessToken != "" {
-		return nil
-	}
-	if !terminalInput(os.Stdin) || !terminalOutput(os.Stderr) {
-		return fmt.Errorf("profile %s needs authentication; run auth in a terminal", name)
-	}
-	_, err := acquireToken(ctx, name, baseURL)
-	return err
 }
