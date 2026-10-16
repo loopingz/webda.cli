@@ -223,7 +223,7 @@ func TestLoadConfig_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig failed: %v", err)
 	}
-	if cfg["myapp"] != "https://example.com" {
+	if cfg.Profiles["myapp"].URL != "https://example.com" {
 		t.Errorf("expected myapp URL, got %v", cfg)
 	}
 }

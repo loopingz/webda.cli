@@ -12,7 +12,6 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
-	yaml "gopkg.in/yaml.v3"
 )
 
 func requestedTimeout(args []string) (time.Duration, error) {
@@ -75,17 +74,17 @@ func localInvocation(args []string) bool {
 	return false
 }
 
-func addLocalCommands(root *cobra.Command, invoked string, cfg map[string]string) {
+func addLocalCommands(root *cobra.Command, invoked string, cfg Config) {
 	root.AddCommand(&cobra.Command{Use: "profiles", Short: "List configured profiles", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		names := make([]string, 0, len(cfg))
-		for name, target := range cfg {
-			if u, err := url.Parse(target); err == nil && u.Host != "" {
+		names := make([]string, 0, len(cfg.Profiles))
+		for name, p := range cfg.Profiles {
+			if u, err := url.Parse(p.URL); err == nil && u.Host != "" {
 				names = append(names, name)
 			}
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", name, cfg[name])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", name, cfg.Profiles[name].URL)
 		}
 		return nil
 	}})
@@ -93,6 +92,8 @@ func addLocalCommands(root *cobra.Command, invoked string, cfg map[string]string
 		name, _ := cmd.Flags().GetString("name")
 		target, _ := cmd.Flags().GetString("url")
 		install, _ := cmd.Flags().GetBool("install-completion")
+		clientID, _ := cmd.Flags().GetString("client-id")
+		scope, _ := cmd.Flags().GetString("scope")
 		if name == "" || target == "" {
 			if !terminalInput(cmd.InOrStdin()) || !terminalOutput(cmd.ErrOrStderr()) {
 				return fmt.Errorf("supply --name and --url, or run setup in a terminal")
@@ -109,25 +110,18 @@ func addLocalCommands(root *cobra.Command, invoked string, cfg map[string]string
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return fmt.Errorf("--url must be an http(s) server URL without credentials, query, or fragment")
 		}
-		if cfg == nil {
+		if cfg.Profiles == nil {
 			if existing, err := loadConfig(); err == nil {
 				cfg = existing
 			} else if !os.IsNotExist(err) {
 				return fmt.Errorf("cannot update existing config: %w", err)
 			}
 		}
-		if cfg == nil {
-			cfg = map[string]string{}
+		if cfg.Profiles == nil {
+			cfg.Profiles = map[string]Profile{}
 		}
-		cfg[name] = strings.TrimRight(target, "/")
-		data, err := yaml.Marshal(cfg)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(configDir(), 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(configDir(), configFileName), data, 0o600); err != nil {
+		cfg.Profiles[name] = Profile{URL: strings.TrimRight(target, "/"), ClientID: clientID, Scope: scope}
+		if err := saveConfig(cfg); err != nil {
 			return err
 		}
 		if install {
@@ -140,6 +134,8 @@ func addLocalCommands(root *cobra.Command, invoked string, cfg map[string]string
 	}}
 	setup.Flags().String("name", "", "profile name")
 	setup.Flags().String("url", "", "server URL")
+	setup.Flags().String("client-id", "", "OAuth client id (default "+defaultClientID+")")
+	setup.Flags().String("scope", "", "OAuth scope (default \""+defaultScope+"\")")
 	setup.Flags().Bool("install-completion", false, "install shell completion and configure shell startup")
 	root.AddCommand(setup)
 	// Cobra creates its standard completion group during execution.

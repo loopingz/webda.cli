@@ -26,13 +26,13 @@ func TestSetupAndProfiles(t *testing.T) {
 	root := &cobra.Command{Use: "myapp"}
 	var out bytes.Buffer
 	root.SetOut(&out)
-	addLocalCommands(root, "myapp", nil)
+	addLocalCommands(root, "myapp", Config{})
 	root.SetArgs([]string{"setup", "--name", "staging", "--url", "https://example.com"})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := loadConfig()
-	if err != nil || cfg["staging"] != "https://example.com" {
+	if err != nil || cfg.Profiles["staging"].URL != "https://example.com" {
 		t.Fatalf("setup failed: %v %v", cfg, err)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".zshrc")); !os.IsNotExist(err) {
@@ -87,7 +87,7 @@ func TestSetupRejectsInvalidProfilesAndURLs(t *testing.T) {
 			root := &cobra.Command{Use: "myapp", SilenceErrors: true, SilenceUsage: true}
 			root.SetOut(&bytes.Buffer{})
 			root.SetErr(&bytes.Buffer{})
-			addLocalCommands(root, "myapp", nil)
+			addLocalCommands(root, "myapp", Config{})
 			root.SetArgs(append([]string{"setup"}, args...))
 			if err := root.Execute(); err == nil {
 				t.Fatal("invalid setup accepted")
@@ -113,7 +113,7 @@ func TestSetupPreservesBrokenExistingConfig(t *testing.T) {
 	root := &cobra.Command{Use: "myapp", SilenceErrors: true, SilenceUsage: true}
 	root.SetOut(&bytes.Buffer{})
 	root.SetErr(&bytes.Buffer{})
-	addLocalCommands(root, "myapp", nil)
+	addLocalCommands(root, "myapp", Config{})
 	root.SetArgs([]string{"setup", "--name", "new", "--url", "https://example.com"})
 	if err := root.Execute(); err == nil {
 		t.Fatal("broken configuration silently overwritten")
@@ -130,7 +130,7 @@ func TestSetupExplicitCompletionOptIn(t *testing.T) {
 	root := &cobra.Command{Use: "myapp"}
 	root.SetOut(&bytes.Buffer{})
 	root.SetErr(&bytes.Buffer{})
-	addLocalCommands(root, "myapp", nil)
+	addLocalCommands(root, "myapp", Config{})
 	root.SetArgs([]string{"setup", "--name", "staging", "--url", "https://example.com", "--install-completion"})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)

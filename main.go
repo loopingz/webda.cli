@@ -26,7 +26,6 @@ import (
 	"github.com/muesli/termenv"
 	browser "github.com/pkg/browser"
 	"github.com/spf13/cobra"
-	yaml "gopkg.in/yaml.v3"
 )
 
 const (
@@ -71,19 +70,6 @@ func userHome() string {
 }
 
 func configDir() string { return filepath.Join(userHome(), configDirName) }
-
-func loadConfig() (map[string]string, error) {
-	cfgPath := filepath.Join(configDir(), configFileName)
-	data, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return nil, err
-	}
-	m := map[string]string{}
-	if err := yaml.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
 
 func opsPath(name string) string { return filepath.Join(configDir(), name+opsExt) }
 
@@ -417,7 +403,8 @@ func runCLI() error {
 		return fmt.Errorf("invalid profile name %q", profile)
 	}
 	cfg, configErr := loadConfig()
-	baseURL := cfg[profile]
+	prof := cfg.Profiles[profile]
+	baseURL := prof.URL
 	root := buildRootCommand(invoked, baseURL)
 	root.SilenceErrors = true
 	root.SilenceUsage = true
@@ -535,7 +522,7 @@ func runCLI() error {
 		return err
 	}})
 	if needs, _ := updater.NeedsUpdate(version, serverInfo.CLIVersionRange); needs {
-		mode := cfg["update"]
+		mode := cfg.Update
 		if mode == "prompt" && terminalInput(os.Stdin) && terminalOutput(os.Stderr) {
 			accepted := false
 			form := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Update CLI to match server requirements?").Value(&accepted)))
