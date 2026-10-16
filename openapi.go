@@ -152,7 +152,11 @@ func buildRequest(ctx context.Context, op Operation, baseURL string, input map[s
 			}
 			reader = bytes.NewReader(data)
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/operations/"+url.PathEscape(op.Name), reader)
+		endpoint := strings.TrimRight(op.Endpoint, "/")
+		if endpoint == "" {
+			endpoint = base + "/operations"
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/"+url.PathEscape(op.Name), reader)
 		if err == nil && reader != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}

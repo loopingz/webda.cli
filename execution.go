@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
+	"github.com/loopingz/webda.cli/oauth"
 	"github.com/loopingz/webda.cli/tui"
 	"github.com/loopingz/webda.cli/webdaclient"
 )
@@ -69,7 +70,7 @@ func executeOperation(ctx context.Context, op Operation, client *webdaclient.Cli
 				if scopeOp == "" {
 					scopeOp = op.Name
 				}
-				return nil, fmt.Errorf("%s: %s; this token does not cover %s; run %s auth --scope \"%s offline_access\"", op.Name, resp.Status, scopeOp, filepath.Base(os.Args[0]), scopeOp)
+				return nil, fmt.Errorf("%s: %s; this token does not cover %s; run %s auth --scope %q", op.Name, resp.Status, scopeOp, filepath.Base(os.Args[0]), widenedScope(client.Scope(), scopeOp))
 			}
 		case 400, 422:
 			hint = "; check operation inputs"
@@ -82,6 +83,19 @@ func executeOperation(ctx context.Context, op Operation, client *webdaclient.Cli
 	return rb, nil
 }
 
+// widenedScope is the scope to request so the token keeps what it grants and also covers op (offline_access kept).
+func widenedScope(current, op string) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range append(strings.Fields(current), op, "offline_access") {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 // insufficientScope reports whether a 403 body is an insufficient_scope error and the operation it names.
 func insufficientScope(body []byte) (string, bool) {
 	var e struct {
@@ -91,7 +105,7 @@ func insufficientScope(body []byte) (string, bool) {
 	if json.Unmarshal(body, &e) != nil || e.Error != "insufficient_scope" {
 		return "", false
 	}
-	return sanitizeTerminal(e.Operation), true
+	return oauth.Sanitize(e.Operation), true
 }
 
 func validOutput(format string) bool {

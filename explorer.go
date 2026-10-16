@@ -41,14 +41,11 @@ func loadHistory(profile string) operationHistory {
 	return h
 }
 func saveHistory(profile string, h operationHistory) error {
-	if err := os.MkdirAll(configDir(), 0o700); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(h, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(historyPath(profile), data, 0o600)
+	return writePrivate(historyPath(profile), data)
 }
 func (h *operationHistory) remember(name string) {
 	recent := []string{name}

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loopingz/webda.cli/oauth"
 	"github.com/loopingz/webda.cli/oauth/oauthtest"
 	"github.com/loopingz/webda.cli/tokenstore"
 )
@@ -69,21 +70,23 @@ func testEnv(t *testing.T, open func(string) error) (authEnv, *bytes.Buffer) {
 	}, out
 }
 
-// browserThatConsents simulates the user approving: it reads the authorize URL, registers the code, then calls back.
+// browserThatConsents simulates a remembered consent: inside Open, it registers the code and calls back
+// synchronously, before Open returns.
 func browserThatConsents(s *oauthtest.Server, code string) func(string) error {
 	return func(authorize string) error {
 		u, _ := url.Parse(authorize)
 		q := u.Query()
 		// the server "issues" this code; with AcceptAnyVerifier the fake accepts any non-empty code_verifier for it
 		s.Codes[code] = "any"
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			cb := q.Get("redirect_uri") + "?code=" + code + "&state=" + url.QueryEscape(q.Get("state"))
-			resp, err := noRedirectClient.Get(cb)
-			if err == nil {
-				_ = resp.Body.Close()
-			}
-		}()
+		cb := q.Get("redirect_uri") + "?code=" + code + "&state=" + url.QueryEscape(q.Get("state"))
+		resp, err := noRedirectClient.Get(cb)
+		if err != nil {
+			return err
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusOK {
+			return errors.New("callback refused: " + resp.Status)
+		}
 		return nil
 	}
 }
@@ -101,7 +104,7 @@ func TestSignInBrowserFlowStoresTokens(t *testing.T) {
 		t.Fatalf("%+v %v", ti, err)
 	}
 	saved, _ := store.Load("p")
-	if saved.RefreshToken != ti.RefreshToken || saved.Legacy() {
+	if saved.RefreshToken != ti.RefreshToken || saved.Legacy() || saved.Server != oauthOrigin(s.URL) {
 		t.Fatalf("saved %+v", saved)
 	}
 	q, _ := url.Parse(authorize)
@@ -111,11 +114,44 @@ func TestSignInBrowserFlowStoresTokens(t *testing.T) {
 		!strings.HasPrefix(params.Get("redirect_uri"), "http://127.0.0.1:") {
 		t.Fatalf("authorize URL %s", authorize)
 	}
-	if !strings.Contains(out.String(), "Opening your browser to sign in: "+authorize) {
+	if !strings.Contains(out.String(), "Sign in at: "+authorize) {
 		t.Fatalf("output:\n%s", out.String())
 	}
 	if _, err := os.Stat(filepath.Join(configDir(), "p.oauth.json")); err != nil {
 		t.Fatalf("metadata cache: %v", err)
+	}
+}
+
+func oauthOrigin(u string) string { return oauth.Origin(u) }
+
+// A launcher that blocks until the browser exits (pkg/browser on Linux) while the remembered consent calls back
+// immediately: the sign-in completes without waiting for Open to return.
+func TestSignInCallbackDuringABlockingOpen(t *testing.T) {
+	s := oauthtest.New()
+	defer s.Close()
+	s.AcceptAnyVerifier = true
+	consent := browserThatConsents(s, "c-block")
+	release := make(chan struct{})
+	defer close(release)
+	env, _ := testEnv(t, func(u string) error {
+		if err := consent(u); err != nil {
+			return err
+		}
+		<-release // the browser process is still running
+		return nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := signIn(context.Background(), env, newMemStore(), "p", Profile{URL: s.URL}, authOptions{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sign-in waited for the browser launcher to exit")
 	}
 }
 
@@ -303,8 +339,8 @@ func TestSignOutWithoutTokenAndWithLegacyToken(t *testing.T) {
 func TestLegacyTokenIsDiscarded(t *testing.T) {
 	store := newMemStore()
 	_ = store.Save("p", tokenstore.TokenInfo{AccessToken: "a", RefreshToken: "r", Sequence: "3"})
-	ti, ok := usableToken(store, "p")
-	if ok || ti.AccessToken != "" {
+	ti, ok, legacy := loadToken(store, "p", Profile{URL: "https://h"})
+	if ok || !legacy || ti.AccessToken != "" {
 		t.Fatal("a legacy token is never used")
 	}
 	if _, err := store.Load("p"); err == nil {
@@ -312,14 +348,32 @@ func TestLegacyTokenIsDiscarded(t *testing.T) {
 	}
 }
 
-func TestUsableToken(t *testing.T) {
+func TestLoadToken(t *testing.T) {
 	store := newMemStore()
-	if _, ok := usableToken(store, "p"); ok {
+	prof := Profile{URL: "https://h.example.com/api"}
+	if _, ok, _ := loadToken(store, "p", prof); ok {
 		t.Fatal("no token")
 	}
+	// a token saved before the server field existed is accepted
 	_ = store.Save("p", tokenstore.TokenInfo{AccessToken: "a", RefreshToken: "r"})
-	if ti, ok := usableToken(store, "p"); !ok || ti.RefreshToken != "r" {
+	if ti, ok, _ := loadToken(store, "p", prof); !ok || ti.RefreshToken != "r" {
 		t.Fatalf("%+v %v", ti, ok)
+	}
+	_ = store.Save("p", tokenstore.TokenInfo{AccessToken: "a", RefreshToken: "r", Server: "https://h.example.com:443"})
+	if _, ok, _ := loadToken(store, "p", prof); !ok {
+		t.Fatal("a token of the profile server is used")
+	}
+}
+
+func TestLoadTokenDiscardsATokenOfAnotherServer(t *testing.T) {
+	store := newMemStore()
+	_ = store.Save("p", tokenstore.TokenInfo{AccessToken: "a", RefreshToken: "r", Server: "https://old.example.com:443"})
+	ti, ok, legacy := loadToken(store, "p", Profile{URL: "https://new.example.com"})
+	if ok || legacy || ti.AccessToken != "" {
+		t.Fatalf("a token of another server is never used: %+v %v %v", ti, ok, legacy)
+	}
+	if _, err := store.Load("p"); err == nil {
+		t.Fatal("a token of another server is deleted")
 	}
 }
 
@@ -487,12 +541,6 @@ func TestValidPrompt(t *testing.T) {
 	}
 	if err := validPrompt("select_account"); err == nil {
 		t.Fatal("unsupported prompt accepted")
-	}
-}
-
-func TestSanitizeTerminal(t *testing.T) {
-	if got := sanitizeTerminal("ab\x1b[31mc\n"); got != "ab[31mc" {
-		t.Fatalf("%q", got)
 	}
 }
 

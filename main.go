@@ -44,16 +44,20 @@ type Operation struct {
 	Description string           `json:"description"`
 	Params      []map[string]any `json:"params"`
 	Raw         map[string]any   `json:"-"`
-	Input       map[string]any   `json:"input"`  // JSON Schema for operation input
-	Output      map[string]any   `json:"output"` // JSON Schema for operation output
+	// Endpoint is the operations URL this operation is executed against (POST <Endpoint>/<name>); "" means
+	// <profile URL>/operations. OpenAPI operations use their own method and path.
+	Endpoint string         `json:"-"`
+	Input    map[string]any `json:"input"`  // JSON Schema for operation input
+	Output   map[string]any `json:"output"` // JSON Schema for operation output
 }
 
 // ServerInfo holds metadata from the operations response.
 type ServerInfo struct {
-	LogoURL         string
-	ServerVersion   string
-	CLIVersionRange string
-	CLIDownloadURL  string
+	LogoURL string
+	// OperationsVersion is the version of the operations listing (a hash on Webda servers), not the server version.
+	OperationsVersion string
+	CLIVersionRange   string
+	CLIDownloadURL    string
 }
 
 // operationsResponse attempts to map possible shapes.
@@ -72,6 +76,27 @@ func userHome() string {
 func configDir() string { return filepath.Join(userHome(), configDirName) }
 
 func opsPath(name string) string { return filepath.Join(configDir(), name+opsExt) }
+
+func lockPath(name string) string { return filepath.Join(configDir(), name+".lock") }
+
+// ensureConfigDir creates the configuration directory and restricts it to the user (0700).
+func ensureConfigDir() error {
+	if err := os.MkdirAll(configDir(), 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(configDir(), 0o700)
+}
+
+// writePrivate writes a file of the configuration directory readable by the user only (0600, also when it existed).
+func writePrivate(path string, data []byte) error {
+	if err := ensureConfigDir(); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}
 
 // User represents /me response subset.
 type User struct {
@@ -101,16 +126,19 @@ func fetchCurrentUser(ctx context.Context) (User, error) {
 
 // fetchOperations loads the operations from the advertised URI (or <url>/operations) and,
 // on a 404, from the OpenAPI document served at the server root. The raw document is cached.
+// Operations are executed against the URL they were listed from (the root fallback executes against <url>/operations).
 func fetchOperations(ctx context.Context, name string, meta *oauth.Metadata) ([]Operation, ServerInfo, error) {
-	opsURL := cli.BaseURL + "/operations"
+	defaultURL := cli.BaseURL + "/operations"
+	opsURL := defaultURL
 	if meta != nil && meta.OperationsURI != "" {
-		opsURL = meta.OperationsURI
+		opsURL = strings.TrimRight(meta.OperationsURI, "/")
 	}
 	status, body, err := getJSON(ctx, opsURL)
 	if err != nil {
 		return nil, ServerInfo{}, err
 	}
 	if status == http.StatusNotFound {
+		opsURL = defaultURL
 		status, body, err = getJSON(ctx, cli.BaseURL+"/")
 		if err != nil {
 			return nil, ServerInfo{}, err
@@ -123,7 +151,10 @@ func fetchOperations(ctx context.Context, name string, meta *oauth.Metadata) ([]
 	if err != nil {
 		return nil, ServerInfo{}, err
 	}
-	_ = os.WriteFile(opsPath(name), body, 0o600)
+	setEndpoint(ops, opsURL)
+	if data, err := json.Marshal(operationsCache{OperationsURL: opsURL, Document: body}); err == nil {
+		_ = writePrivate(opsPath(name), data)
+	}
 	return ops, info, nil
 }
 
@@ -149,7 +180,7 @@ func parseOperationsResponse(body []byte) ([]Operation, ServerInfo, error) {
 	var gen map[string]any
 	if err := json.Unmarshal(body, &gen); err == nil {
 		info.LogoURL, _ = gen["logo"].(string)
-		info.ServerVersion, _ = gen["version"].(string)
+		info.OperationsVersion, _ = gen["version"].(string)
 		if cli, ok := gen["cli"].(map[string]any); ok {
 			info.CLIVersionRange, _ = cli["version_range"].(string)
 			info.CLIDownloadURL, _ = cli["download_url"].(string)
@@ -345,7 +376,7 @@ func runCLI() error {
 	defer cancel()
 	root.SetContext(ctx)
 	addLocalCommands(root, invoked, cfg)
-	ops, serverInfo, _ := cachedOperations(profile)
+	ops, serverInfo, _ := cachedOperations(profile, baseURL)
 	logoData, _ := os.ReadFile(tui.LogoCachePath(configDir(), profile))
 	originalHelp := root.HelpFunc()
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
@@ -385,6 +416,7 @@ func runCLI() error {
 	if err != nil {
 		return err
 	}
+	cli.LockFile = lockPath(profile)
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, timeout)
 	remoteOps, info, fetchErr := fetchOperations(fetchCtx, profile, meta)
 	fetchCancel()
@@ -490,8 +522,7 @@ func installShellCompletion(root *cobra.Command, name string) {
 	}
 
 	// Write marker
-	_ = os.MkdirAll(configDir(), 0o700)
-	_ = os.WriteFile(markerPath, []byte(shell+"\n"), 0o600)
+	_ = writePrivate(markerPath, []byte(shell+"\n"))
 	fmt.Fprintf(os.Stderr, "Shell completion installed for %s. Restart your shell or run: source ~/.%src to activate.\n", shell, shell)
 }
 

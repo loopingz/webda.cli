@@ -104,8 +104,5 @@ func saveConfig(c Config) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(configDir(), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(configDir(), configFileName), data, 0o600)
+	return writePrivate(filepath.Join(configDir(), configFileName), data)
 }

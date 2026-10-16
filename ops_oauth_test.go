@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -174,9 +175,13 @@ func TestFetchOperationsFallsBackToOpenAPI(t *testing.T) {
 	if acceptRoot != "application/json" {
 		t.Fatalf("Accept = %q", acceptRoot)
 	}
-	cached, _, err := cachedOperations("test")
+	cached, _, err := cachedOperations("test", srv.URL)
 	if err != nil || len(cached) != 3 {
 		t.Fatalf("cache: %v %v", cached, err)
+	}
+	st, err := os.Stat(opsPath("test"))
+	if err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o600) {
+		t.Fatalf("cache mode %v %v", st, err)
 	}
 	_ = dir
 }
@@ -202,6 +207,69 @@ func TestFetchOperationsUsesMetadataURI(t *testing.T) {
 	}
 }
 
+// Operations listed from webda_operations_uri are executed against that URL, also when loaded from the cache.
+func TestOperationsExecuteAgainstTheAdvertisedURL(t *testing.T) {
+	var executed []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/custom/ops":
+			_, _ = w.Write([]byte(`{"operations":{"A.b":{"id":"A.b"}}}`))
+		case r.Method == http.MethodPost:
+			executed = append(executed, r.URL.Path)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setupFetch(t, srv)
+	ops, _, err := fetchOperations(context.Background(), "test", &oauth.Metadata{OperationsURI: srv.URL + "/custom/ops/"})
+	if err != nil || len(ops) != 1 {
+		t.Fatalf("%v %v", ops, err)
+	}
+	if _, err := executeOperation(context.Background(), ops[0], cli, srv.URL, nil); err != nil {
+		t.Fatal(err)
+	}
+	cached, _, err := cachedOperations("test", srv.URL)
+	if err != nil || len(cached) != 1 {
+		t.Fatalf("cache: %v %v", cached, err)
+	}
+	if _, err := executeOperation(context.Background(), cached[0], cli, srv.URL, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(executed) != 2 || executed[0] != "/custom/ops/A.b" || executed[1] != "/custom/ops/A.b" {
+		t.Fatalf("executed %v", executed)
+	}
+	// a cached URL on another origin is not trusted: <url>/operations is used
+	other, _, _ := cachedOperations("test", "https://other.example.com")
+	if len(other) != 1 || other[0].Endpoint != "" {
+		t.Fatalf("cross-origin cached endpoint must be ignored: %+v", other)
+	}
+}
+
+func TestLegacyOperationsCacheExecutesAgainstDefaultURL(t *testing.T) {
+	var executed string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		executed = r.Method + " " + r.URL.Path
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	setupFetch(t, srv)
+	if err := os.WriteFile(opsPath("test"), []byte(`{"operations":{"A.b":{"id":"A.b"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ops, _, err := cachedOperations("test", srv.URL)
+	if err != nil || len(ops) != 1 {
+		t.Fatalf("%v %v", ops, err)
+	}
+	if _, err := executeOperation(context.Background(), ops[0], cli, srv.URL, nil); err != nil {
+		t.Fatal(err)
+	}
+	if executed != "POST /operations/A.b" {
+		t.Fatalf("executed %q", executed)
+	}
+}
+
 func TestInsufficientScopeHint(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -217,6 +285,38 @@ func TestInsufficientScopeHint(t *testing.T) {
 	msg := err.Error()
 	if !strings.Contains(msg, "this token does not cover Task.Delete") || !strings.Contains(msg, `auth --scope "Task.Delete offline_access"`) {
 		t.Fatalf("unexpected message %q", msg)
+	}
+}
+
+func TestInsufficientScopeHintKeepsTheCurrentGrant(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "insufficient_scope", "operation": "Task.Delete"})
+	}))
+	defer srv.Close()
+	store := tokenstore.NewMachineStore(t.TempDir())
+	if err := store.Save("test", tokenstore.TokenInfo{AccessToken: "at", RefreshToken: "rt", Scope: "Task.Get offline_access Task.Get"}); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := webdaclient.New("test", srv.URL, store, nil, "webda-cli", nil)
+	_, err := executeOperation(context.Background(), Operation{Name: "Task.Delete"}, c, srv.URL, nil)
+	if err == nil || !strings.Contains(err.Error(), `auth --scope "Task.Get offline_access Task.Delete"`) {
+		t.Fatalf("unexpected %v", err)
+	}
+}
+
+func TestWidenedScope(t *testing.T) {
+	cases := map[[2]string]string{
+		{"", "A.b"}:                        "A.b offline_access",
+		{"X.y offline_access", "A.b"}:      "X.y offline_access A.b",
+		{"X.y A.b", "A.b"}:                 "X.y A.b offline_access",
+		{"  X.y   offline_access ", "X.y"}: "X.y offline_access",
+	}
+	for in, want := range cases {
+		if got := widenedScope(in[0], in[1]); got != want {
+			t.Errorf("widenedScope(%q, %q) = %q, want %q", in[0], in[1], got, want)
+		}
 	}
 }
 

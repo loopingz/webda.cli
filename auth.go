@@ -9,9 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/loopingz/webda.cli/oauth"
 	"github.com/loopingz/webda.cli/tokenstore"
@@ -36,6 +34,9 @@ type authEnv struct {
 }
 
 func defaultAuthEnv() authEnv {
+	// the launcher's own output must not mix with command output on stdout
+	browser.Stdout = os.Stderr
+	browser.Stderr = os.Stderr
 	return authEnv{
 		HTTP:     &http.Client{Timeout: 30 * time.Second},
 		Open:     browser.OpenURL,
@@ -69,7 +70,7 @@ func metadataCachePath(profile string) string {
 
 // metadataFor returns the cached or discovered metadata of a profile (cache: configDir()/<profile>.oauth.json).
 func metadataFor(ctx context.Context, env authEnv, profile string, prof Profile) (*oauth.Metadata, error) {
-	if err := os.MkdirAll(configDir(), 0o700); err != nil {
+	if err := ensureConfigDir(); err != nil {
 		return nil, err
 	}
 	m, err := oauth.LoadOrDiscover(ctx, env.HTTP, prof.URL, metadataCachePath(profile))
@@ -85,16 +86,6 @@ func useDeviceFlow(env authEnv, opts authOptions) bool {
 		return true
 	}
 	return env.GOOS == "linux" && env.Getenv("DISPLAY") == "" && env.Getenv("WAYLAND_DISPLAY") == ""
-}
-
-// sanitizeTerminal drops control characters (including ESC) from server-provided text before printing it.
-func sanitizeTerminal(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
 }
 
 // signIn runs the browser flow (falling back to the device flow when the browser cannot be opened) and stores the tokens.
@@ -130,6 +121,7 @@ func signIn(ctx context.Context, env authEnv, store tokenstore.TokenStore, profi
 		RefreshToken: tokens.RefreshToken,
 		ExpiresAt:    tokens.ExpiresAt(time.Now()),
 		Scope:        tokens.Scope,
+		Server:       oauth.Origin(prof.URL),
 	}
 	if err := store.Save(profile, ti); err != nil {
 		return tokenstore.TokenInfo{}, err
@@ -159,16 +151,48 @@ func browserFlow(ctx context.Context, env authEnv, m *oauth.Metadata, clientID, 
 		ClientID: clientID, RedirectURI: l.RedirectURI, State: state, Challenge: pkce.Challenge,
 		Scope: scope, Hostname: hostname, Prompt: prompt,
 	})
-	_, _ = fmt.Fprintf(env.Out, "Opening your browser to sign in: %s\n", authorize)
-	if err := env.Open(authorize); err != nil {
-		return nil, errBrowserUnavailable
-	}
+	// armed before the browser opens: a remembered consent can call back while Open is still running
+	l.Arm(state, m.ResultURI)
+	_, _ = fmt.Fprintf(env.Out, "Sign in at: %s\n", authorize)
 	_, _ = fmt.Fprintln(env.Out, "Waiting for the sign-in to complete (Ctrl+C to cancel)...")
-	code, err := l.Wait(ctx, state, m.ResultURI, env.Timeout)
+	code, err := waitForCallback(ctx, env, l, authorize)
 	if err != nil {
 		return nil, err
 	}
 	return oauth.ExchangeCode(ctx, env.HTTP, m, clientID, code, pkce.Verifier, l.RedirectURI)
+}
+
+type callbackResult struct {
+	code string
+	err  error
+}
+
+// waitForCallback opens the browser in the background (a launcher may block until the browser exits) and waits
+// for the loopback callback; an Open error before any callback gives errBrowserUnavailable.
+func waitForCallback(ctx context.Context, env authEnv, l *oauth.Loopback, authorize string) (string, error) {
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	opened := make(chan error, 1)
+	go func() { opened <- env.Open(authorize) }()
+	result := make(chan callbackResult, 1)
+	go func() {
+		code, err := l.Wait(waitCtx, env.Timeout)
+		result <- callbackResult{code, err}
+	}()
+	select {
+	case res := <-result:
+		return res.code, res.err
+	case err := <-opened:
+		if err == nil {
+			res := <-result
+			return res.code, res.err
+		}
+		cancel()
+		if res := <-result; res.err == nil {
+			return res.code, nil // the callback won the race with the Open error
+		}
+		return "", errBrowserUnavailable
+	}
 }
 
 // deviceFlow runs the device authorization grant, printing the code and a QR code of the verification URL.
@@ -178,8 +202,8 @@ func deviceFlow(ctx context.Context, env authEnv, m *oauth.Metadata, clientID, s
 		return nil, err
 	}
 	_, _ = fmt.Fprintf(env.Out, "To sign in, open %s and enter the code %s\n",
-		sanitizeTerminal(dc.VerificationURI), sanitizeTerminal(dc.UserCode))
-	if complete := sanitizeTerminal(dc.VerificationURIComplete); complete != "" {
+		oauth.Sanitize(dc.VerificationURI), oauth.Sanitize(dc.UserCode))
+	if complete := oauth.Sanitize(dc.VerificationURIComplete); complete != "" {
 		qrterminal.GenerateWithConfig(complete, qrterminal.Config{
 			Level:          qrterminal.L,
 			Writer:         env.Out,
@@ -197,8 +221,8 @@ func deviceFlow(ctx context.Context, env authEnv, m *oauth.Metadata, clientID, s
 // signOut revokes the refresh token (best effort) and deletes the stored token.
 func signOut(ctx context.Context, env authEnv, store tokenstore.TokenStore, profile string, prof Profile) error {
 	ti, loadErr := store.Load(profile)
-	// a legacy token is never sent to the OAuth server
-	if loadErr == nil && ti.RefreshToken != "" && !ti.Legacy() {
+	// a legacy token, or one issued for another server, is never sent to the OAuth server
+	if loadErr == nil && ti.RefreshToken != "" && ti.IssuedFor(oauth.Origin(prof.URL)) {
 		if err := revoke(ctx, env, profile, prof, ti.RefreshToken); err != nil {
 			_, _ = fmt.Fprintf(env.Out, "Warning: could not revoke the sign-in on the server: %v\n", err)
 		}
@@ -224,15 +248,16 @@ func revoke(ctx context.Context, env authEnv, profile string, prof Profile, refr
 	return oauth.Revoke(ctx, env.HTTP, m, prof.EffectiveClientID(), refreshToken)
 }
 
-// loadToken returns the stored token when usable; a legacy token is deleted and reported.
-func loadToken(store tokenstore.TokenStore, profile string) (ti tokenstore.TokenInfo, ok, legacy bool) {
+// loadToken returns the stored token when usable for the profile server. A legacy token, or a token issued for
+// another server (the profile URL changed), is deleted; legacy reports the former.
+func loadToken(store tokenstore.TokenStore, profile string, prof Profile) (ti tokenstore.TokenInfo, ok, legacy bool) {
 	ti, err := store.Load(profile)
 	if err != nil {
 		return tokenstore.TokenInfo{}, false, false
 	}
-	if ti.Legacy() {
+	if !ti.IssuedFor(oauth.Origin(prof.URL)) {
 		_ = store.Delete(profile)
-		return tokenstore.TokenInfo{}, false, true
+		return tokenstore.TokenInfo{}, false, ti.Legacy()
 	}
 	if ti.AccessToken == "" && ti.RefreshToken == "" {
 		return tokenstore.TokenInfo{}, false, false
@@ -240,15 +265,9 @@ func loadToken(store tokenstore.TokenStore, profile string) (ti tokenstore.Token
 	return ti, true, false
 }
 
-// usableToken loads the stored token; a legacy token is deleted and never returned.
-func usableToken(store tokenstore.TokenStore, profile string) (tokenstore.TokenInfo, bool) {
-	ti, ok, _ := loadToken(store, profile)
-	return ti, ok
-}
-
 // authenticate ensures the profile has a usable token, signing in on first use when possible.
 func authenticate(ctx context.Context, env authEnv, store tokenstore.TokenStore, bin, profile string, prof Profile, interactive bool) error {
-	_, ok, legacy := loadToken(store, profile)
+	_, ok, legacy := loadToken(store, profile, prof)
 	if ok {
 		return nil
 	}
@@ -287,8 +306,8 @@ func newAuthCmd(env authEnv, profile string, prof Profile) *cobra.Command {
 			return fmt.Errorf("auth requires a terminal; use --device to sign in with a code")
 		}
 		previous, loadErr := tokenStore.Load(profile)
-		if loadErr == nil && previous.Legacy() {
-			// a legacy token is never kept nor sent to the OAuth server
+		if loadErr == nil && !previous.IssuedFor(oauth.Origin(prof.URL)) {
+			// a legacy token, or one issued for another server, is never kept nor sent to the OAuth server
 			if err := tokenStore.Delete(profile); err != nil {
 				return err
 			}
