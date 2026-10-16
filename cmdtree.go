@@ -56,8 +56,8 @@ func splitOperationName(name string) []string {
 // Operations are split by "." into command groups. Only leaf commands are runnable.
 // logoData is passed through to operation execution for TUI display.
 func buildCommandTree(root *cobra.Command, client *webdaclient.Client, baseURL string, ops []Operation, logoData []byte) {
-	for _, op := range ops {
-		o := op
+	for i := range ops {
+		o := ops[i]
 		segments := splitOperationName(o.Name)
 		parent := root
 		// Create or find intermediate group commands
@@ -80,7 +80,7 @@ func buildCommandTree(root *cobra.Command, client *webdaclient.Client, baseURL s
 		leaf := segments[len(segments)-1]
 		cmd := &cobra.Command{
 			Use:   leaf,
-			Short: o.Description,
+			Short: operationShort(o),
 			Args:  cobra.NoArgs,
 			RunE:  makeOperationRunE(o, client, baseURL, logoData),
 		}
@@ -375,4 +375,13 @@ func hasMissingRequired(schema map[string]any, body map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// operationShort returns the one-line help of an operation: its summary or the first line of its description.
+func operationShort(o Operation) string {
+	if o.Summary != "" {
+		return o.Summary
+	}
+	line, _, _ := strings.Cut(o.Description, "\n")
+	return line
 }

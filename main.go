@@ -12,11 +12,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/loopingz/webda.cli/oauth"
 	"github.com/loopingz/webda.cli/tokenstore"
 	"github.com/loopingz/webda.cli/tui"
 	"github.com/loopingz/webda.cli/updater"
@@ -34,6 +36,8 @@ const (
 // Operation is a simplified structure for dynamic commands.
 type Operation struct {
 	Name        string           `json:"name"`
+	Summary     string           `json:"summary,omitempty"`
+	Source      string           `json:"source,omitempty"` // "operations" or "openapi"
 	Destructive bool             `json:"destructive,omitempty"`
 	Method      string           `json:"method"`
 	Path        string           `json:"path"`
@@ -95,22 +99,25 @@ func fetchCurrentUser(ctx context.Context) (User, error) {
 	return u, nil
 }
 
-func fetchOperations(ctx context.Context, name string) ([]Operation, ServerInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cli.BaseURL+"/operations", nil)
+// fetchOperations loads the operations from the advertised URI (or <url>/operations) and,
+// on a 404, from the OpenAPI document served at the server root. The raw document is cached.
+func fetchOperations(ctx context.Context, name string, meta *oauth.Metadata) ([]Operation, ServerInfo, error) {
+	opsURL := cli.BaseURL + "/operations"
+	if meta != nil && meta.OperationsURI != "" {
+		opsURL = meta.OperationsURI
+	}
+	status, body, err := getJSON(ctx, opsURL)
 	if err != nil {
 		return nil, ServerInfo{}, err
 	}
-	resp, err := cli.Do(req)
-	if err != nil {
-		return nil, ServerInfo{}, err
+	if status == http.StatusNotFound {
+		status, body, err = getJSON(ctx, cli.BaseURL+"/")
+		if err != nil {
+			return nil, ServerInfo{}, err
+		}
 	}
-	defer resp.Body.Close() //nolint:errcheck
-	if resp.StatusCode >= 300 {
-		return nil, ServerInfo{}, fmt.Errorf("operations fetch failed: %s", resp.Status)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, ServerInfo{}, err
+	if status >= 300 {
+		return nil, ServerInfo{}, fmt.Errorf("operations fetch failed: %d %s", status, http.StatusText(status))
 	}
 	ops, info, err := parseOperationsResponse(body)
 	if err != nil {
@@ -118,6 +125,21 @@ func fetchOperations(ctx context.Context, name string) ([]Operation, ServerInfo,
 	}
 	_ = os.WriteFile(opsPath(name), body, 0o600)
 	return ops, info, nil
+}
+
+func getJSON(ctx context.Context, target string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := cli.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	body, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, body, err
 }
 
 // parseOperationsResponse parses the full /operations response, returning
@@ -146,6 +168,20 @@ func parseOperationsResponse(body []byte) ([]Operation, ServerInfo, error) {
 // - object with `operations` map (the 'normal' format used by the user)
 // - openapi-like `paths` map
 func parseOperations(body []byte) ([]Operation, error) {
+	ops, err := parseOperationsRaw(body)
+	if err != nil {
+		return nil, err
+	}
+	for i := range ops {
+		if ops[i].Source == "" {
+			ops[i].Source = "operations"
+		}
+	}
+	sort.SliceStable(ops, func(i, j int) bool { return ops[i].Name < ops[j].Name })
+	return ops, nil
+}
+
+func parseOperationsRaw(body []byte) ([]Operation, error) {
 	// shape 1: top-level array
 	var list []Operation
 	if err := json.Unmarshal(body, &list); err == nil && len(list) > 0 {
@@ -174,6 +210,8 @@ func parseOperations(body []byte) ([]Operation, error) {
 						if desc, ok := m["description"].(string); ok {
 							op.Description = desc
 						}
+						op.Summary, _ = m["summary"].(string)
+						op.Destructive, _ = m["destructive"].(bool)
 						op.Raw = m
 						// Input can be an inline JSON schema (map) or a string reference
 						switch inp := m["input"].(type) {
@@ -196,20 +234,9 @@ func parseOperations(body []byte) ([]Operation, error) {
 			}
 		}
 
-		// shape 4: openapi-like
-		if paths, ok := gen["paths"].(map[string]any); ok {
-			for pth, v := range paths {
-				if mm, ok := v.(map[string]any); ok {
-					for method, mv := range mm {
-						mUpper := strings.ToUpper(method)
-						op := Operation{Path: pth, Method: mUpper, Name: deriveOpName(method, pth), Raw: map[string]any{"openapi": mv}}
-						list = append(list, op)
-					}
-				}
-			}
-			if len(list) > 0 {
-				return list, nil
-			}
+		// shape 4: OpenAPI document
+		if list := parseOpenAPI(gen); len(list) > 0 {
+			return list, nil
 		}
 	}
 
@@ -335,16 +362,13 @@ func runCLI() error {
 	if err := authenticate(ctx, env, tokenStore, invoked, profile, prof, terminalInput(os.Stdin) && terminalOutput(os.Stderr)); err != nil {
 		return err
 	}
-	meta, err := metadataFor(ctx, env, profile, prof)
-	if err != nil {
-		return err
-	}
+	meta := optionalMetadata(ctx, env, profile, prof)
 	cli, err = webdaclient.New(profile, baseURL, tokenStore, meta, prof.EffectiveClientID(), nil)
 	if err != nil {
 		return err
 	}
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, timeout)
-	remoteOps, info, fetchErr := fetchOperations(fetchCtx, profile)
+	remoteOps, info, fetchErr := fetchOperations(fetchCtx, profile, meta)
 	fetchCancel()
 	switch {
 	case fetchErr == nil:
@@ -378,7 +402,7 @@ func runCLI() error {
 		timeout, _ := cmd.Flags().GetDuration("timeout")
 		ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 		defer cancel()
-		ops, _, err := fetchOperations(ctx, profile)
+		ops, _, err := fetchOperations(ctx, profile, meta)
 		if err != nil {
 			return err
 		}

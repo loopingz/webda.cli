@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -46,20 +45,9 @@ func executeOperation(ctx context.Context, op Operation, client *webdaclient.Cli
 	if err != nil {
 		return nil, err
 	}
-	data, err := json.Marshal(validated)
+	req, err := buildRequest(ctx, op, baseURL, validated)
 	if err != nil {
 		return nil, err
-	}
-	var reader io.Reader
-	if len(validated) > 0 {
-		reader = bytes.NewReader(data)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/operations/"+url.PathEscape(op.Name), reader)
-	if err != nil {
-		return nil, err
-	}
-	if reader != nil {
-		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -77,6 +65,12 @@ func executeOperation(ctx context.Context, op Operation, client *webdaclient.Cli
 			hint = "; run auth to sign in again"
 		case 403:
 			hint = "; check your account permissions"
+			if scopeOp, ok := insufficientScope(rb); ok {
+				if scopeOp == "" {
+					scopeOp = op.Name
+				}
+				return nil, fmt.Errorf("%s: %s; this token does not cover %s; run %s auth --scope \"%s offline_access\"", op.Name, resp.Status, scopeOp, filepath.Base(os.Args[0]), scopeOp)
+			}
 		case 400, 422:
 			hint = "; check operation inputs"
 		}
@@ -86,6 +80,18 @@ func executeOperation(ctx context.Context, op Operation, client *webdaclient.Cli
 		rb = []byte(resp.Status + "\n")
 	}
 	return rb, nil
+}
+
+// insufficientScope reports whether a 403 body is an insufficient_scope error and the operation it names.
+func insufficientScope(body []byte) (string, bool) {
+	var e struct {
+		Error     string `json:"error"`
+		Operation string `json:"operation"`
+	}
+	if json.Unmarshal(body, &e) != nil || e.Error != "insufficient_scope" {
+		return "", false
+	}
+	return sanitizeTerminal(e.Operation), true
 }
 
 func validOutput(format string) bool {

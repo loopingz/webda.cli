@@ -508,7 +508,7 @@ func TestFetchOperations_Success(t *testing.T) {
 		cli = origCli
 	}()
 
-	ops, info, err := fetchOperations(context.Background(), "test")
+	ops, info, err := fetchOperations(context.Background(), "test", nil)
 	if err != nil {
 		t.Fatalf("fetchOperations failed: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestFetchOperations_Unauthorized(t *testing.T) {
 		cli = origCli
 	}()
 
-	_, _, err := fetchOperations(context.Background(), "test")
+	_, _, err := fetchOperations(context.Background(), "test", nil)
 	if err == nil {
 		t.Fatal("expected error when unauthorized")
 	}

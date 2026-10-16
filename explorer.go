@@ -78,7 +78,8 @@ func (i operationItem) Description() string { return i.op.Description }
 func (i operationItem) FilterValue() string { return i.op.Name + " " + i.op.Description }
 func explorerItems(ops []Operation, h operationHistory) []list.Item {
 	items := make([]list.Item, 0, len(ops))
-	for _, op := range ops {
+	for i := range ops {
+		op := ops[i]
 		recent := false
 		for _, name := range h.Recent {
 			if name == op.Name {
@@ -261,9 +262,9 @@ func runExplorer(cmd *cobra.Command, profile, baseURL string, ops []Operation) e
 			if name == "" {
 				return nil
 			}
-			for _, op := range ops {
-				if op.Name == name {
-					o := op
+			for i := range ops {
+				if ops[i].Name == name {
+					o := ops[i]
 					selected = &o
 					break
 				}

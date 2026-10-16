@@ -323,3 +323,13 @@ func newLogoutCmd(env authEnv, profile string, prof Profile) *cobra.Command {
 		return err
 	}}
 }
+
+// optionalMetadata returns the OAuth metadata or nil when it is unavailable, so cached
+// operations keep working offline (the client then simply does not refresh).
+func optionalMetadata(ctx context.Context, env authEnv, profile string, prof Profile) *oauth.Metadata {
+	m, err := metadataFor(ctx, env, profile, prof)
+	if err != nil {
+		return nil
+	}
+	return m
+}
