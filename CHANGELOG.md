@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/loopingz/webda.cli/compare/v1.2.0...v1.3.0) (2026-10-16)
+
+
+### Features
+
+* OAuth 2.1 sign-in with delegated tokens ([#15](https://github.com/loopingz/webda.cli/issues/15)) ([d99b3a6](https://github.com/loopingz/webda.cli/commit/d99b3a6b8fed20f93a3e67ab369a8c1ca89964f6))
+
 ## [1.2.0](https://github.com/loopingz/webda.cli/compare/v1.1.0...v1.2.0) (2026-10-11)
 
 
