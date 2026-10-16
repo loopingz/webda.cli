@@ -2,6 +2,7 @@ package tokenstore
 
 import (
 	"testing"
+	"time"
 
 	"github.com/zalando/go-keyring"
 )
@@ -10,7 +11,8 @@ func TestKeyringStore_SaveLoad(t *testing.T) {
 	keyring.MockInit()
 	store := &KeyringStore{}
 
-	ti := TokenInfo{RefreshToken: "rt", AccessToken: "at", Sequence: "42"}
+	expires := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	ti := TokenInfo{RefreshToken: "rt", AccessToken: "at", ExpiresAt: expires, Scope: "* offline_access"}
 	if err := store.Save("test-app", ti); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
@@ -19,7 +21,7 @@ func TestKeyringStore_SaveLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if loaded.RefreshToken != "rt" || loaded.AccessToken != "at" || loaded.Sequence != "42" {
+	if loaded.RefreshToken != "rt" || loaded.AccessToken != "at" || !loaded.ExpiresAt.Equal(expires) || loaded.Scope != "* offline_access" || loaded.Legacy() {
 		t.Fatalf("roundtrip failed: got %+v", loaded)
 	}
 }
