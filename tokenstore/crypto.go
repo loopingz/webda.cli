@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"fmt"
+	"os"
 )
 
 // Encrypt encrypts plaintext with AES-256-GCM using the given 32-byte key.
@@ -41,4 +42,15 @@ func Decrypt(key, data []byte) ([]byte, error) {
 	}
 	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
 	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+// writePrivate writes a file readable by the user only (0600, also when it existed) in dir (created 0700).
+func writePrivate(dir, path string, data []byte) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }

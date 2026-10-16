@@ -129,7 +129,24 @@ Host mappings are stored in `~/.webdacli/config.yaml`:
 myapp: https://app.example.com
 staging: https://staging.example.com
 wlocal: http://localhost:18080
+lc:
+  url: https://my.loopingz.com
+  client_id: webda-cli
+  scope: "* offline_access"
+update: prompt
 ```
+
+A profile is either a URL string or an object with `url` and optional `client_id`
+(default `webda-cli`) and `scope` (default `"* offline_access"`). Set them with
+`setup`:
+
+```bash
+myapp setup --name lc --url https://my.loopingz.com --client-id webda-cli --scope "* offline_access"
+```
+
+Running `setup` again for an existing profile keeps its `client_id` and `scope` unless
+you pass them. Changing the URL of a profile deletes its stored sign-in and its cached
+OAuth metadata and operations, so a token is never sent to another server.
 
 The binary name remains the default profile, so existing symlinks work. Use
 `--profile` to select another host without creating a symlink. Setup changes shell
@@ -142,17 +159,67 @@ run `refresh-operations` to update it.
 
 ## Authentication
 
-On first run, the CLI opens a browser for authentication. The token is stored in `~/.webdacli/<name>.tok` and automatically refreshed in the background.
+Sign-in uses OAuth 2.0 with PKCE. On first use, or with `myapp auth`, the CLI opens
+your browser so you can sign in and choose which operations it may call. Tokens are
+refreshed automatically (refresh tokens rotate, and concurrent requests share a
+single refresh, also across CLI processes through `~/.webdacli/<profile>.lock`). The
+access token is only ever sent to the profile's server: a redirect to another
+origin (scheme, host or port) drops it, and a token saved for another server is
+discarded.
 
 ```bash
-myapp              # opens browser for auth on first run
-myapp auth         # re-authenticate
-myapp whoami       # show current user info
+myapp auth                         # sign in (or sign in again)
+myapp auth --scope "Task.* offline_access"   # request a narrower scope
+myapp auth --device                # sign in with a code instead of a browser
+myapp auth --prompt consent        # browser flow only: login, consent or none
+myapp whoami                       # show current user info
+myapp logout                       # revoke the sign-in and forget it
 ```
+
+- `--scope` overrides the profile scope for this sign-in.
+- The device flow shows a verification URL, a code and a terminal QR code; approve it
+  on any device. It is used automatically over SSH (`SSH_CONNECTION`), on Linux
+  without `DISPLAY` or `WAYLAND_DISPLAY`, and when no browser can be opened.
+  `--prompt` applies to the browser flow only.
+- Without a terminal (scripts, CI), a first use that needs a sign-in fails fast with
+  `run myapp auth`; run it once interactively.
+- A failed re-authentication keeps your previous sign-in. A successful one revokes
+  the previous refresh token.
+- `logout` revokes the refresh token on the server, then deletes it locally.
+- Sign-ins saved by older versions of the CLI are discarded once; sign in again.
+- Connected apps can also be revoked from the web app.
+- When a token does not cover an operation, the CLI prints
+  `this token does not cover <operation>; run myapp auth --scope "<current scope> <operation>"`
+  so you can request it without losing what the token already grants.
+- The CLI prints `Sign in at: <url>` before opening the browser; open it yourself if no
+  browser appears.
+
+### Token storage
+
+Tokens go to the OS keychain (service `webda-cli`, one entry per profile). Without a
+keychain they are stored in an encrypted file, `~/.webdacli/<profile>.tok`, keyed with
+the SSH agent or, failing that, the machine (with a random salt in
+`~/.webdacli/<profile>.tok.salt`). Each token records the server it was issued for.
+
+OAuth server metadata is cached in `~/.webdacli/<profile>.oauth.json`. It is checked
+to be same-origin with the profile URL and is discovered again when invalid. A
+`webda_result_uri` on another origin is ignored and the CLI shows its own page after
+the browser sign-in.
+
+### Server requirements
+
+OAuth sign-in needs a Webda server running `@webda/oauth` (`OAuthServer`); against
+other servers (discovery answers 404) `auth`, and any command that contacts the server
+while no sign-in is stored, stops with `this server does not support OAuth sign-in`
+(without a terminal, commands ask you to run `myapp auth` instead).
+Operations come from the advertised `webda_operations_uri` (default `/operations`,
+`Webda/OperationsTransport`) or, when that answers 404, from the REST OpenAPI
+document served when `exposeOpenAPI` is enabled.
 
 ## Operations
 
-The CLI fetches available operations from the remote host (`GET /operations`) and creates nested subcommands automatically. Operation names are split by `.` and converted to kebab-case:
+The CLI fetches available operations from the remote host (`GET <operations URL>`: the
+`webda_operations_uri` advertised by the OAuth metadata, `/operations` by default) and creates nested subcommands automatically. Operation names are split by `.` and converted to kebab-case:
 
 | Operation | Command |
 |---|---|
@@ -160,7 +227,9 @@ The CLI fetches available operations from the remote host (`GET /operations`) an
 | `MFA.SMS` | `myapp mfa sms` |
 | `Sync.AWS` | `myapp sync aws` |
 
-Operations are invoked via `POST /operations/<operationId>`.
+Operations are invoked via `POST <operations URL>/<operationId>`, against the URL they
+were listed from (also when loaded from the cache). Operations from the OpenAPI
+document use their own method and path.
 
 ### Flags from JSON Schema
 
@@ -304,8 +373,11 @@ This runs `go vet`, `golangci-lint`, and `go test -race` automatically.
 | Path | Purpose |
 |---|---|
 | `~/.webdacli/config.yaml` | Host mappings |
-| `~/.webdacli/<name>.tok` | Authentication tokens |
-| `~/.webdacli/<name>.operations` | Cached operations spec |
+| `~/.webdacli/<name>.tok` | Encrypted tokens (only when no OS keychain is available) |
+| `~/.webdacli/<name>.tok.salt` | Salt of the machine-bound token encryption (no keychain nor SSH agent) |
+| `~/.webdacli/<name>.lock` | Lock held while a token is refreshed, shared by CLI processes |
+| `~/.webdacli/<name>.oauth.json` | Cached OAuth server metadata |
+| `~/.webdacli/<name>.operations` | Cached operations spec and the URL they run against |
 | `~/.webdacli/<name>.logo` | Cached logo image |
 | `~/.webdacli/<profile>.history.json` | Favorite and recent operation names |
 | `~/.webdacli/completions/` | Shell completion scripts |

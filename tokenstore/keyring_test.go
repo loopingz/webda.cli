@@ -2,6 +2,7 @@ package tokenstore
 
 import (
 	"testing"
+	"time"
 
 	"github.com/zalando/go-keyring"
 )
@@ -10,7 +11,8 @@ func TestKeyringStore_SaveLoad(t *testing.T) {
 	keyring.MockInit()
 	store := &KeyringStore{}
 
-	ti := TokenInfo{RefreshToken: "rt", AccessToken: "at", Sequence: "42"}
+	expires := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	ti := TokenInfo{RefreshToken: "rt", AccessToken: "at", ExpiresAt: expires, Scope: "* offline_access"}
 	if err := store.Save("test-app", ti); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
@@ -19,7 +21,7 @@ func TestKeyringStore_SaveLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if loaded.RefreshToken != "rt" || loaded.AccessToken != "at" || loaded.Sequence != "42" {
+	if loaded.RefreshToken != "rt" || loaded.AccessToken != "at" || !loaded.ExpiresAt.Equal(expires) || loaded.Scope != "* offline_access" || loaded.Legacy() {
 		t.Fatalf("roundtrip failed: got %+v", loaded)
 	}
 }
@@ -38,7 +40,7 @@ func TestKeyringStore_Delete(t *testing.T) {
 	keyring.MockInit()
 	store := &KeyringStore{}
 
-	ti := TokenInfo{RefreshToken: "rt", AccessToken: "at", Sequence: "1"}
+	ti := TokenInfo{RefreshToken: "rt", AccessToken: "at", Scope: "s1"}
 	store.Save("del-test", ti)
 
 	if err := store.Delete("del-test"); err != nil {
@@ -62,10 +64,10 @@ func TestKeyringStore_SaveLoadOverwrite(t *testing.T) {
 	keyring.MockInit()
 	store := &KeyringStore{}
 
-	ti := TokenInfo{RefreshToken: "r1", AccessToken: "a1", Sequence: "1"}
+	ti := TokenInfo{RefreshToken: "r1", AccessToken: "a1", Scope: "s1"}
 	store.Save("overwrite-test", ti)
 
-	ti2 := TokenInfo{RefreshToken: "r2", AccessToken: "a2", Sequence: "2"}
+	ti2 := TokenInfo{RefreshToken: "r2", AccessToken: "a2", Scope: "s2"}
 	store.Save("overwrite-test", ti2)
 
 	loaded, err := store.Load("overwrite-test")

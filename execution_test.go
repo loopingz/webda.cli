@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loopingz/webda.cli/oauth"
+	"github.com/loopingz/webda.cli/oauth/oauthtest"
 	"github.com/loopingz/webda.cli/tokenstore"
 	"github.com/loopingz/webda.cli/webdaclient"
 	"github.com/spf13/cobra"
@@ -31,11 +33,10 @@ func TestExecutionFailureAndTimeout(t *testing.T) {
 				_, _ = w.Write([]byte(`{"message":"denied"}`))
 			}))
 			defer srv.Close()
-			client, err := webdaclient.New("test", srv.URL, tokenstore.NewMachineStore(t.TempDir()))
+			client, err := webdaclient.New("test", srv.URL, tokenstore.NewMachineStore(t.TempDir()), nil, "webda-cli", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer client.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 			defer cancel()
 			_, err = executeOperation(ctx, Operation{Name: "Test.run"}, client, srv.URL, nil)
@@ -169,5 +170,26 @@ func TestDestructiveOperationRequiresConfirmation(t *testing.T) {
 	ops, err := parseOperations([]byte(`[{"name":"Test.delete","destructive":true,"input":{"type":"object"}}]`))
 	if err != nil || !isDestructive(ops[0]) || ops[0].Input == nil {
 		t.Fatalf("array metadata lost: %#v %v", ops, err)
+	}
+}
+
+func TestOperationReportsSignedOut(t *testing.T) {
+	s := oauthtest.New()
+	defer s.Close()
+	s.Handle("/operations/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
+	store := tokenstore.NewMachineStore(t.TempDir())
+	if err := store.Save("test", tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "revoked", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	client, err := webdaclient.New("test", s.URL, store, &oauth.Metadata{TokenEndpoint: s.URL + "/oauth/token"}, "webda-cli", s.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = executeOperation(context.Background(), Operation{Name: "Test.run"}, client, s.URL, nil)
+	if !errors.Is(err, webdaclient.ErrSignedOut) {
+		t.Fatalf("want ErrSignedOut, got %v", err)
+	}
+	if got, want := signedOutMessage("myapp"), "Your sign-in expired or was revoked; run myapp auth."; got != want {
+		t.Fatalf("message %q, want %q", got, want)
 	}
 }

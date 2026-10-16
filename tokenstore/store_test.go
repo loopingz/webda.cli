@@ -1,7 +1,9 @@
 package tokenstore
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/zalando/go-keyring"
 )
@@ -26,7 +28,7 @@ func TestNewTokenStore_FallbackToMachine(t *testing.T) {
 }
 
 func TestMarshalUnmarshalTokenInfo(t *testing.T) {
-	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Sequence: "1"}
+	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Scope: "* offline_access"}
 	data, err := MarshalTokenInfo(ti)
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +50,7 @@ func TestUnmarshalTokenInfo_Invalid(t *testing.T) {
 }
 
 func TestMarshalTokenInfo_Roundtrip(t *testing.T) {
-	ti := TokenInfo{RefreshToken: "", AccessToken: "", Sequence: ""}
+	ti := TokenInfo{RefreshToken: "", AccessToken: "", Scope: ""}
 	data, err := MarshalTokenInfo(ti)
 	if err != nil {
 		t.Fatal(err)
@@ -59,5 +61,22 @@ func TestMarshalTokenInfo_Roundtrip(t *testing.T) {
 	}
 	if loaded != ti {
 		t.Fatalf("empty roundtrip failed: got %+v", loaded)
+	}
+}
+
+func TestTokenInfoLegacyAndRoundTrip(t *testing.T) {
+	legacy, err := UnmarshalTokenInfo([]byte(`{"refresh_token":"r","access_token":"a","sequence":"12"}`))
+	if err != nil || !legacy.Legacy() {
+		t.Fatalf("legacy: %+v %v", legacy, err)
+	}
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", ExpiresAt: now, Scope: "Task.* offline_access"}
+	data, err := MarshalTokenInfo(ti)
+	if err != nil || strings.Contains(string(data), "sequence") {
+		t.Fatalf("%s %v", data, err)
+	}
+	back, err := UnmarshalTokenInfo(data)
+	if err != nil || back.Legacy() || !back.ExpiresAt.Equal(now) || back.Scope != ti.Scope {
+		t.Fatalf("%+v %v", back, err)
 	}
 }

@@ -21,11 +21,11 @@ func formatVersion(ver, comm, date string) string {
 func newVersionCmd(baseURL string, serverInfo *ServerInfo) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Show CLI and server version",
+		Short: "Show CLI version and cached operations version",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("%s version %s\n", cmd.Root().Use, formatVersion(version, commit, buildDate))
-			if serverInfo != nil && serverInfo.ServerVersion != "" {
-				fmt.Printf("server: %s (%s)\n", serverInfo.ServerVersion, baseURL)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s version %s\n", cmd.Root().Use, formatVersion(version, commit, buildDate))
+			if serverInfo != nil && serverInfo.OperationsVersion != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "operations version: %s (%s)\n", serverInfo.OperationsVersion, baseURL)
 			}
 			return nil
 		},

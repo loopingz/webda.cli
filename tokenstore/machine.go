@@ -49,10 +49,7 @@ func (s *MachineStore) loadOrCreateSalt(name string) ([]byte, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(s.configDir, 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(path, salt, 0o600); err != nil {
+	if err := writePrivate(s.configDir, path, salt); err != nil {
 		return nil, err
 	}
 	return salt, nil
@@ -87,10 +84,7 @@ func (s *MachineStore) Save(name string, ti TokenInfo) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.configDir, 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(s.tokenFile(name), ciphertext, 0o600)
+	return writePrivate(s.configDir, s.tokenFile(name), ciphertext)
 }
 
 func (s *MachineStore) Delete(name string) error {

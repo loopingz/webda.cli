@@ -60,7 +60,9 @@ func FetchAndCacheLogoWithContext(ctx context.Context, url, cachePath string) ([
 	if err != nil {
 		return nil, err
 	}
-	_ = os.WriteFile(cachePath, data, 0o600)
+	if os.WriteFile(cachePath, data, 0o600) == nil {
+		_ = os.Chmod(cachePath, 0o600)
+	}
 	return data, nil
 }
 

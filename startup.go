@@ -1,7 +1,7 @@
 package main
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"github.com/charmbracelet/huh"
+	"github.com/loopingz/webda.cli/oauth"
+	"github.com/loopingz/webda.cli/tokenstore"
 	"github.com/spf13/cobra"
-	yaml "gopkg.in/yaml.v3"
 )
 
 func requestedTimeout(args []string) (time.Duration, error) {
@@ -75,17 +76,17 @@ func localInvocation(args []string) bool {
 	return false
 }
 
-func addLocalCommands(root *cobra.Command, invoked string, cfg map[string]string) {
+func addLocalCommands(root *cobra.Command, invoked string, cfg Config) {
 	root.AddCommand(&cobra.Command{Use: "profiles", Short: "List configured profiles", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		names := make([]string, 0, len(cfg))
-		for name, target := range cfg {
-			if u, err := url.Parse(target); err == nil && u.Host != "" {
+		names := make([]string, 0, len(cfg.Profiles))
+		for name, p := range cfg.Profiles {
+			if u, err := url.Parse(p.URL); err == nil && u.Host != "" {
 				names = append(names, name)
 			}
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", name, cfg[name])
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", name, cfg.Profiles[name].URL)
 		}
 		return nil
 	}})
@@ -93,6 +94,8 @@ func addLocalCommands(root *cobra.Command, invoked string, cfg map[string]string
 		name, _ := cmd.Flags().GetString("name")
 		target, _ := cmd.Flags().GetString("url")
 		install, _ := cmd.Flags().GetBool("install-completion")
+		clientID, _ := cmd.Flags().GetString("client-id")
+		scope, _ := cmd.Flags().GetString("scope")
 		if name == "" || target == "" {
 			if !terminalInput(cmd.InOrStdin()) || !terminalOutput(cmd.ErrOrStderr()) {
 				return fmt.Errorf("supply --name and --url, or run setup in a terminal")
@@ -109,26 +112,35 @@ func addLocalCommands(root *cobra.Command, invoked string, cfg map[string]string
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return fmt.Errorf("--url must be an http(s) server URL without credentials, query, or fragment")
 		}
-		if cfg == nil {
+		if cfg.Profiles == nil {
 			if existing, err := loadConfig(); err == nil {
 				cfg = existing
 			} else if !os.IsNotExist(err) {
 				return fmt.Errorf("cannot update existing config: %w", err)
 			}
 		}
-		if cfg == nil {
-			cfg = map[string]string{}
+		if cfg.Profiles == nil {
+			cfg.Profiles = map[string]Profile{}
 		}
-		cfg[name] = strings.TrimRight(target, "/")
-		data, err := yaml.Marshal(cfg)
-		if err != nil {
+		next := Profile{URL: strings.TrimRight(target, "/"), ClientID: clientID, Scope: scope}
+		previous, existed := cfg.Profiles[name]
+		if existed {
+			// re-running setup keeps the client id and scope not given again
+			if next.ClientID == "" {
+				next.ClientID = previous.ClientID
+			}
+			if next.Scope == "" {
+				next.Scope = previous.Scope
+			}
+		}
+		cfg.Profiles[name] = next
+		if err := saveConfig(cfg); err != nil {
 			return err
 		}
-		if err := os.MkdirAll(configDir(), 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(configDir(), configFileName), data, 0o600); err != nil {
-			return err
+		if existed && strings.TrimRight(previous.URL, "/") != next.URL {
+			if err := forgetServer(name); err != nil {
+				return err
+			}
 		}
 		if install {
 			if err := installCompletion(root, invoked); err != nil {
@@ -140,6 +152,8 @@ func addLocalCommands(root *cobra.Command, invoked string, cfg map[string]string
 	}}
 	setup.Flags().String("name", "", "profile name")
 	setup.Flags().String("url", "", "server URL")
+	setup.Flags().String("client-id", "", "OAuth client id (default "+defaultClientID+")")
+	setup.Flags().String("scope", "", "OAuth scope (default \""+defaultScope+"\")")
 	setup.Flags().Bool("install-completion", false, "install shell completion and configure shell startup")
 	root.AddCommand(setup)
 	// Cobra creates its standard completion group during execution.
@@ -162,6 +176,27 @@ func addLocalCommands(root *cobra.Command, invoked string, cfg map[string]string
 	completion.AddCommand(&cobra.Command{Use: "install", Short: "Install completion and configure shell startup", Args: cobra.NoArgs, RunE: func(_ *cobra.Command, _ []string) error { return installCompletion(root, invoked) }})
 	root.AddCommand(completion)
 }
+
+// newTokenStore opens the token store (tests replace it).
+var newTokenStore = tokenstore.NewTokenStore
+
+// forgetServer removes what a profile kept from its previous server: the token, the OAuth metadata and the operations.
+func forgetServer(profile string) error {
+	store := newTokenStore(configDir())
+	// backends report a missing token differently: only fail when a token remains after the delete
+	if err := store.Delete(profile); err != nil {
+		if _, loadErr := store.Load(profile); loadErr == nil {
+			return fmt.Errorf("cannot remove the sign-in of the previous server: %w", err)
+		}
+	}
+	for _, path := range []string{metadataCachePath(profile), opsPath(profile)} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func installCompletion(root *cobra.Command, name string) error {
 	shell := detectShell()
 	var err error
@@ -181,20 +216,36 @@ func installCompletion(root *cobra.Command, name string) error {
 	_, _ = fmt.Fprintf(root.ErrOrStderr(), "Completion installed for %s. Restart your shell to activate it.\n", shell)
 	return nil
 }
-func cachedOperations(name string) ([]Operation, ServerInfo, error) {
+
+// operationsCache is <profile>.operations: the operations document and the URL its operations are executed against.
+type operationsCache struct {
+	OperationsURL string          `json:"webda_cli_operations_url"`
+	Document      json.RawMessage `json:"webda_cli_document"`
+}
+
+// cachedOperations reads the cached operations; a cache written by an older version (the raw document) executes
+// against <url>/operations, and so does a cached URL that is not on the profile origin.
+func cachedOperations(name, baseURL string) ([]Operation, ServerInfo, error) {
 	data, err := os.ReadFile(opsPath(name))
 	if err != nil {
 		return nil, ServerInfo{}, err
 	}
+	var cache operationsCache
+	if json.Unmarshal(data, &cache) == nil && len(cache.Document) > 0 {
+		ops, info, err := parseOperationsResponse(cache.Document)
+		if err == nil && cache.OperationsURL != "" && oauth.Origin(cache.OperationsURL) == oauth.Origin(baseURL) {
+			setEndpoint(ops, cache.OperationsURL)
+		}
+		return ops, info, err
+	}
 	return parseOperationsResponse(data)
 }
-func authenticate(ctx context.Context, name, baseURL string) error {
-	if ti, err := tokenStore.Load(name); err == nil && ti.AccessToken != "" {
-		return nil
+
+// setEndpoint records the operations URL on the operations of the operations transport.
+func setEndpoint(ops []Operation, endpoint string) {
+	for i := range ops {
+		if ops[i].Source != "openapi" {
+			ops[i].Endpoint = endpoint
+		}
 	}
-	if !terminalInput(os.Stdin) || !terminalOutput(os.Stderr) {
-		return fmt.Errorf("profile %s needs authentication; run auth in a terminal", name)
-	}
-	_, err := acquireToken(ctx, name, baseURL)
-	return err
 }

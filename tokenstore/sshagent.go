@@ -102,10 +102,7 @@ func (s *SSHAgentStore) Save(name string, ti TokenInfo) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.configDir, 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(s.tokenFile(name), ciphertext, 0o600)
+	return writePrivate(s.configDir, s.tokenFile(name), ciphertext)
 }
 
 func (s *SSHAgentStore) Delete(name string) error {

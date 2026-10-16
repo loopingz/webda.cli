@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,48 +12,52 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/loopingz/webda.cli/oauth"
 	"github.com/loopingz/webda.cli/tokenstore"
 	"github.com/loopingz/webda.cli/tui"
 	"github.com/loopingz/webda.cli/updater"
 	"github.com/loopingz/webda.cli/webdaclient"
 	"github.com/muesli/termenv"
-	browser "github.com/pkg/browser"
 	"github.com/spf13/cobra"
-	yaml "gopkg.in/yaml.v3"
 )
 
 const (
 	configDirName  = ".webdacli"
 	configFileName = "config.yaml"
 	opsExt         = ".operations"
-	callbackPort   = 18181
 )
 
 // Operation is a simplified structure for dynamic commands.
 type Operation struct {
 	Name        string           `json:"name"`
+	Summary     string           `json:"summary,omitempty"`
+	Source      string           `json:"source,omitempty"` // "operations" or "openapi"
 	Destructive bool             `json:"destructive,omitempty"`
 	Method      string           `json:"method"`
 	Path        string           `json:"path"`
 	Description string           `json:"description"`
 	Params      []map[string]any `json:"params"`
 	Raw         map[string]any   `json:"-"`
-	Input       map[string]any   `json:"input"`  // JSON Schema for operation input
-	Output      map[string]any   `json:"output"` // JSON Schema for operation output
+	// Endpoint is the operations URL this operation is executed against (POST <Endpoint>/<name>); "" means
+	// <profile URL>/operations. OpenAPI operations use their own method and path.
+	Endpoint string         `json:"-"`
+	Input    map[string]any `json:"input"`  // JSON Schema for operation input
+	Output   map[string]any `json:"output"` // JSON Schema for operation output
 }
 
 // ServerInfo holds metadata from the operations response.
 type ServerInfo struct {
-	LogoURL         string
-	ServerVersion   string
-	CLIVersionRange string
-	CLIDownloadURL  string
+	LogoURL string
+	// OperationsVersion is the version of the operations listing (a hash on Webda servers), not the server version.
+	OperationsVersion string
+	CLIVersionRange   string
+	CLIDownloadURL    string
 }
 
 // operationsResponse attempts to map possible shapes.
@@ -72,149 +75,27 @@ func userHome() string {
 
 func configDir() string { return filepath.Join(userHome(), configDirName) }
 
-func loadConfig() (map[string]string, error) {
-	cfgPath := filepath.Join(configDir(), configFileName)
-	data, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return nil, err
-	}
-	m := map[string]string{}
-	if err := yaml.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
 func opsPath(name string) string { return filepath.Join(configDir(), name+opsExt) }
 
-// acquireToken ensures tokens exist, returning the access token (and persisting all values).
-func acquireToken(ctx context.Context, name, baseURL string) (string, error) {
-	if ti, err := tokenStore.Load(name); err == nil && ti.AccessToken != "" {
-		return ti.AccessToken, nil
-	}
+func lockPath(name string) string { return filepath.Join(configDir(), name+".lock") }
+
+// ensureConfigDir creates the configuration directory and restricts it to the user (0700).
+func ensureConfigDir() error {
 	if err := os.MkdirAll(configDir(), 0o700); err != nil {
-		return "", err
+		return err
 	}
-	type authResult struct {
-		Access string
-		Err    error
-	}
-	resultCh := make(chan authResult, 1)
-	srv := &http.Server{Addr: fmt.Sprintf(":%d", callbackPort)}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/auth", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Origin", baseURL)
-			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		body, _ := io.ReadAll(r.Body)
-		refresh, seq := extractToken(body)
-		if refresh == "" || seq == 0 {
-			http.Error(w, "invalid body", http.StatusBadRequest)
-			resultCh <- authResult{Err: errors.New("missing refresh_token or sequence")}
-			return
-		}
-		access, seq, err := exchangeToken(ctx, baseURL, refresh, seq)
-		if err != nil {
-			http.Error(w, "failed to exchange", http.StatusInternalServerError)
-			resultCh <- authResult{Err: err}
-			return
-		}
-		// fetch current user (cli may not be initialized yet during initial auth)
-		if cli != nil {
-			if user, err := fetchCurrentUser(ctx); err == nil {
-				fmt.Fprintf(os.Stderr, "Authenticated as user: %s (ID: %s)\n", user.Email, user.UUID)
-			}
-		}
-		// persist all
-		ti := tokenstore.TokenInfo{RefreshToken: refresh, AccessToken: access, Sequence: fmt.Sprintf("%d", seq)}
-		if err := tokenStore.Save(name, ti); err != nil {
-			http.Error(w, "cannot persist token", http.StatusInternalServerError)
-			resultCh <- authResult{Err: err}
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-		go func() { resultCh <- authResult{Access: access} }()
-		go func() { _ = srv.Shutdown(context.Background()) }()
-	})
-	srv.Handler = mux
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			resultCh <- authResult{Err: err}
-		}
-	}()
-	host, _ := os.Hostname()
-	callback := fmt.Sprintf("http://localhost:%d/auth", callbackPort)
-	authURL := strings.TrimRight(baseURL, "/") + "/auth/cli?callback=" + urlQueryEscape(callback) + "&name=" + urlQueryEscape(name+"-cli") + "&hostname=" + urlQueryEscape(host)
-	fmt.Fprintf(os.Stderr, "Opening browser for CLI authentication: %s\n", authURL)
-	_ = browser.OpenURL(authURL)
-	fmt.Fprintln(os.Stderr, "Waiting for authentication (Ctrl+C to cancel)...")
-	select {
-	case <-ctx.Done():
-		_ = srv.Shutdown(context.Background())
-		return "", ctx.Err()
-	case res := <-resultCh:
-		return res.Access, res.Err
-	case <-time.After(5 * time.Minute):
-		_ = srv.Shutdown(context.Background())
-		return "", errors.New("auth timeout")
-	}
+	return os.Chmod(configDir(), 0o700)
 }
 
-// extractToken returns refresh_token and sequence.
-func extractToken(body []byte) (refresh string, seq int) {
-	var obj map[string]any
-	err := json.Unmarshal(body, &obj)
-	if err != nil {
-		return "", 0
+// writePrivate writes a file of the configuration directory readable by the user only (0600, also when it existed).
+func writePrivate(path string, data []byte) error {
+	if err := ensureConfigDir(); err != nil {
+		return err
 	}
-	if v, ok := obj["refresh_token"].(string); ok {
-		refresh = v
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
 	}
-	if seq == 0 { // maybe numeric
-		if v, ok := obj["sequence"].(float64); ok {
-			seq = int(v)
-		}
-	}
-	return refresh, seq
-}
-
-// exchangeToken exchanges the refresh token + sequence for an access token.
-func exchangeToken(ctx context.Context, baseURL string, refresh string, sequence int) (string, int, error) {
-	payload := map[string]any{"token": refresh, "sequence": sequence}
-	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, strings.TrimRight(baseURL, "/")+"/auth/refresh", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", 0, fmt.Errorf("exchange failed: %s %s", resp.Status, string(body))
-	}
-	body, _ := io.ReadAll(resp.Body)
-	var obj map[string]any
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return "", 0, err
-	}
-	access := ""
-	if v, ok := obj["access_token"].(string); ok && v != "" {
-		access = v
-	}
-	seq := 0
-	if v, ok := obj["sequence"].(float64); ok {
-		seq = int(v)
-	}
-	return access, seq, nil
+	return os.Chmod(path, 0o600)
 }
 
 // User represents /me response subset.
@@ -243,29 +124,53 @@ func fetchCurrentUser(ctx context.Context) (User, error) {
 	return u, nil
 }
 
-func fetchOperations(ctx context.Context, name string) ([]Operation, ServerInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cli.BaseURL+"/operations", nil)
+// fetchOperations loads the operations from the advertised URI (or <url>/operations) and,
+// on a 404, from the OpenAPI document served at the server root. The raw document is cached.
+// Operations are executed against the URL they were listed from (the root fallback executes against <url>/operations).
+func fetchOperations(ctx context.Context, name string, meta *oauth.Metadata) ([]Operation, ServerInfo, error) {
+	defaultURL := cli.BaseURL + "/operations"
+	opsURL := defaultURL
+	if meta != nil && meta.OperationsURI != "" {
+		opsURL = strings.TrimRight(meta.OperationsURI, "/")
+	}
+	status, body, err := getJSON(ctx, opsURL)
 	if err != nil {
 		return nil, ServerInfo{}, err
 	}
-	resp, err := cli.Do(req)
-	if err != nil {
-		return nil, ServerInfo{}, err
+	if status == http.StatusNotFound {
+		opsURL = defaultURL
+		status, body, err = getJSON(ctx, cli.BaseURL+"/")
+		if err != nil {
+			return nil, ServerInfo{}, err
+		}
 	}
-	defer resp.Body.Close() //nolint:errcheck
-	if resp.StatusCode >= 300 {
-		return nil, ServerInfo{}, fmt.Errorf("operations fetch failed: %s", resp.Status)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, ServerInfo{}, err
+	if status >= 300 {
+		return nil, ServerInfo{}, fmt.Errorf("operations fetch failed: %d %s", status, http.StatusText(status))
 	}
 	ops, info, err := parseOperationsResponse(body)
 	if err != nil {
 		return nil, ServerInfo{}, err
 	}
-	_ = os.WriteFile(opsPath(name), body, 0o600)
+	setEndpoint(ops, opsURL)
+	if data, err := json.Marshal(operationsCache{OperationsURL: opsURL, Document: body}); err == nil {
+		_ = writePrivate(opsPath(name), data)
+	}
 	return ops, info, nil
+}
+
+func getJSON(ctx context.Context, target string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := cli.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	body, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, body, err
 }
 
 // parseOperationsResponse parses the full /operations response, returning
@@ -275,7 +180,7 @@ func parseOperationsResponse(body []byte) ([]Operation, ServerInfo, error) {
 	var gen map[string]any
 	if err := json.Unmarshal(body, &gen); err == nil {
 		info.LogoURL, _ = gen["logo"].(string)
-		info.ServerVersion, _ = gen["version"].(string)
+		info.OperationsVersion, _ = gen["version"].(string)
 		if cli, ok := gen["cli"].(map[string]any); ok {
 			info.CLIVersionRange, _ = cli["version_range"].(string)
 			info.CLIDownloadURL, _ = cli["download_url"].(string)
@@ -294,6 +199,38 @@ func parseOperationsResponse(body []byte) ([]Operation, ServerInfo, error) {
 // - object with `operations` map (the 'normal' format used by the user)
 // - openapi-like `paths` map
 func parseOperations(body []byte) ([]Operation, error) {
+	ops, err := parseOperationsRaw(body)
+	if err != nil {
+		return nil, err
+	}
+	for i := range ops {
+		if ops[i].Source == "" {
+			ops[i].Source = "operations"
+		}
+	}
+	sort.SliceStable(ops, func(i, j int) bool {
+		a, b := ops[i], ops[j]
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		if a.Method != b.Method {
+			return a.Method < b.Method
+		}
+		return a.Path < b.Path
+	})
+	unique := ops[:0]
+	for i := range ops {
+		op := &ops[i]
+		if n := len(unique); n > 0 && unique[n-1].Name == op.Name {
+			fmt.Fprintf(os.Stderr, "Warning: skipping duplicate operation %q (%s %s)\n", op.Name, op.Method, op.Path)
+			continue
+		}
+		unique = append(unique, *op)
+	}
+	return unique, nil
+}
+
+func parseOperationsRaw(body []byte) ([]Operation, error) {
 	// shape 1: top-level array
 	var list []Operation
 	if err := json.Unmarshal(body, &list); err == nil && len(list) > 0 {
@@ -322,6 +259,8 @@ func parseOperations(body []byte) ([]Operation, error) {
 						if desc, ok := m["description"].(string); ok {
 							op.Description = desc
 						}
+						op.Summary, _ = m["summary"].(string)
+						op.Destructive, _ = m["destructive"].(bool)
 						op.Raw = m
 						// Input can be an inline JSON schema (map) or a string reference
 						switch inp := m["input"].(type) {
@@ -344,20 +283,9 @@ func parseOperations(body []byte) ([]Operation, error) {
 			}
 		}
 
-		// shape 4: openapi-like
-		if paths, ok := gen["paths"].(map[string]any); ok {
-			for pth, v := range paths {
-				if mm, ok := v.(map[string]any); ok {
-					for method, mv := range mm {
-						mUpper := strings.ToUpper(method)
-						op := Operation{Path: pth, Method: mUpper, Name: deriveOpName(method, pth), Raw: map[string]any{"openapi": mv}}
-						list = append(list, op)
-					}
-				}
-			}
-			if len(list) > 0 {
-				return list, nil
-			}
+		// shape 4: OpenAPI document
+		if list := parseOpenAPI(gen); len(list) > 0 {
+			return list, nil
 		}
 	}
 
@@ -398,9 +326,18 @@ func buildRootCommand(name, baseURL string) *cobra.Command {
 
 func main() {
 	if err := runCLI(); err != nil {
+		if errors.Is(err, webdaclient.ErrSignedOut) {
+			fmt.Fprintln(os.Stderr, signedOutMessage(filepath.Base(os.Args[0])))
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
+}
+
+// signedOutMessage is printed when the server refused the refresh token.
+func signedOutMessage(bin string) string {
+	return fmt.Sprintf("Your sign-in expired or was revoked; run %s auth.", bin)
 }
 
 func runCLI() error {
@@ -417,7 +354,8 @@ func runCLI() error {
 		return fmt.Errorf("invalid profile name %q", profile)
 	}
 	cfg, configErr := loadConfig()
-	baseURL := cfg[profile]
+	prof := cfg.Profiles[profile]
+	baseURL := prof.URL
 	root := buildRootCommand(invoked, baseURL)
 	root.SilenceErrors = true
 	root.SilenceUsage = true
@@ -438,7 +376,7 @@ func runCLI() error {
 	defer cancel()
 	root.SetContext(ctx)
 	addLocalCommands(root, invoked, cfg)
-	ops, serverInfo, _ := cachedOperations(profile)
+	ops, serverInfo, _ := cachedOperations(profile, baseURL)
 	logoData, _ := os.ReadFile(tui.LogoCachePath(configDir(), profile))
 	originalHelp := root.HelpFunc()
 	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
@@ -451,7 +389,7 @@ func runCLI() error {
 	if localInvocation(args) {
 		buildCommandTree(root, nil, baseURL, ops, logoData)
 		addExplorer(root, profile, baseURL, ops)
-		root.AddCommand(&cobra.Command{Use: "auth", Short: "Sign in to the selected profile"}, &cobra.Command{Use: "whoami", Short: "Show current user"}, &cobra.Command{Use: "update", Short: "Update CLI"}, &cobra.Command{Use: "refresh-operations", Short: "Refresh cached operation definitions"})
+		root.AddCommand(stubCommand(newAuthCmd(authEnv{}, profile, prof)), stubCommand(newLogoutCmd(authEnv{}, profile, prof)), &cobra.Command{Use: "whoami", Short: "Show current user"}, &cobra.Command{Use: "update", Short: "Update CLI"}, &cobra.Command{Use: "refresh-operations", Short: "Refresh cached operation definitions"})
 		return root.Execute()
 	}
 	if configErr != nil {
@@ -461,37 +399,32 @@ func runCLI() error {
 		return fmt.Errorf("unknown profile %q; run %s profiles or %s setup", profile, invoked, invoked)
 	}
 	tokenStore = tokenstore.NewTokenStore(configDir())
-	if firstCommand(args) == "auth" {
-		root.AddCommand(&cobra.Command{Use: "auth", Short: "Sign in to the selected profile", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-			if !terminalInput(cmd.InOrStdin()) || !terminalOutput(cmd.ErrOrStderr()) {
-				return fmt.Errorf("auth requires a terminal")
-			}
-			if _, err := tokenStore.Load(profile); err == nil {
-				if err := tokenStore.Delete(profile); err != nil {
-					return err
-				}
-			}
-			_, err := acquireToken(cmd.Context(), profile, baseURL)
-			return err
-		}})
+	env := defaultAuthEnv()
+	switch firstCommand(args) {
+	case "auth":
+		root.AddCommand(newAuthCmd(env, profile, prof))
+		return root.Execute()
+	case "logout":
+		root.AddCommand(newLogoutCmd(env, profile, prof))
 		return root.Execute()
 	}
-	if err := authenticate(ctx, profile, baseURL); err != nil {
+	if err := authenticate(ctx, env, tokenStore, invoked, profile, prof, terminalInput(os.Stdin) && terminalOutput(os.Stderr)); err != nil {
 		return err
 	}
-	cli, err = webdaclient.New(profile, baseURL, tokenStore)
+	meta := optionalMetadata(ctx, env, profile, prof)
+	cli, err = webdaclient.New(profile, baseURL, tokenStore, meta, prof.EffectiveClientID(), nil)
 	if err != nil {
 		return err
 	}
-	defer cli.Close()
+	cli.LockFile = lockPath(profile)
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, timeout)
-	remoteOps, info, fetchErr := fetchOperations(fetchCtx, profile)
+	remoteOps, info, fetchErr := fetchOperations(fetchCtx, profile, meta)
 	fetchCancel()
 	switch {
 	case fetchErr == nil:
 		ops = remoteOps
 		serverInfo = info
-	case len(ops) == 0:
+	case len(ops) == 0, errors.Is(fetchErr, webdaclient.ErrSignedOut):
 		return fetchErr
 	default:
 		fmt.Fprintf(os.Stderr, "Using cached operations: %v\n", fetchErr)
@@ -519,7 +452,7 @@ func runCLI() error {
 		timeout, _ := cmd.Flags().GetDuration("timeout")
 		ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 		defer cancel()
-		ops, _, err := fetchOperations(ctx, profile)
+		ops, _, err := fetchOperations(ctx, profile, meta)
 		if err != nil {
 			return err
 		}
@@ -535,7 +468,7 @@ func runCLI() error {
 		return err
 	}})
 	if needs, _ := updater.NeedsUpdate(version, serverInfo.CLIVersionRange); needs {
-		mode := cfg["update"]
+		mode := cfg.Update
 		if mode == "prompt" && terminalInput(os.Stdin) && terminalOutput(os.Stderr) {
 			accepted := false
 			form := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Update CLI to match server requirements?").Value(&accepted)))
@@ -554,7 +487,7 @@ func runCLI() error {
 		}
 		fmt.Fprintf(os.Stderr, "CLI update available (requires %s). Run %s update.\n", serverInfo.CLIVersionRange, invoked)
 	}
-	root.AddCommand(&cobra.Command{Use: "auth", Short: "Sign in to the selected profile", RunE: func(_ *cobra.Command, _ []string) error { return fmt.Errorf("run auth as a standalone command") }})
+	root.AddCommand(stubCommand(newAuthCmd(env, profile, prof)), stubCommand(newLogoutCmd(env, profile, prof)))
 	addExplorer(root, profile, baseURL, ops)
 	return root.Execute()
 }
@@ -589,8 +522,7 @@ func installShellCompletion(root *cobra.Command, name string) {
 	}
 
 	// Write marker
-	_ = os.MkdirAll(configDir(), 0o700)
-	_ = os.WriteFile(markerPath, []byte(shell+"\n"), 0o600)
+	_ = writePrivate(markerPath, []byte(shell+"\n"))
 	fmt.Fprintf(os.Stderr, "Shell completion installed for %s. Restart your shell or run: source ~/.%src to activate.\n", shell, shell)
 }
 

@@ -39,11 +39,10 @@ func TestExplorerTerminalHelper(t *testing.T) {
 	}))
 	defer srv.Close()
 	var err error
-	cli, err = webdaclient.New("fixture", srv.URL, tokenstore.NewMachineStore(t.TempDir()))
+	cli, err = webdaclient.New("fixture", srv.URL, tokenstore.NewMachineStore(t.TempDir()), nil, "webda-cli", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cli.Close()
 	root := &cobra.Command{Use: "myapp"}
 	root.PersistentFlags().Duration("timeout", 5*time.Second, "")
 	op := Operation{Name: "Users.create", Description: "Create a user", Input: map[string]any{"type": "object", "required": []any{"name"}, "properties": map[string]any{"name": map[string]any{"type": "string"}}}}
