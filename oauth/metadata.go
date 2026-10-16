@@ -67,10 +67,12 @@ func noRedirect(hc *http.Client) *http.Client {
 	return &c
 }
 
-func origin(raw string) (string, bool) {
+// Origin returns scheme://host:port of an absolute URL, with the default port made explicit
+// ("" when raw is not an absolute URL with a host).
+func Origin(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || !u.IsAbs() || u.Hostname() == "" {
-		return "", false
+		return ""
 	}
 	scheme := strings.ToLower(u.Scheme)
 	port := u.Port()
@@ -82,14 +84,18 @@ func origin(raw string) (string, bool) {
 			port = "80"
 		}
 	}
-	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port, true
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
 }
 
 // validate checks the required endpoints are present and every URL shares the base URL origin.
+// A webda_result_uri on another origin (a result page hosted elsewhere) is dropped: the built-in page is used.
 func validate(baseURL string, m *Metadata) error {
-	want, ok := origin(baseURL)
-	if !ok {
+	want := Origin(baseURL)
+	if want == "" {
 		return fmt.Errorf("oauth discovery: invalid base URL %q", baseURL)
+	}
+	if m.ResultURI != "" && Origin(m.ResultURI) != want {
+		m.ResultURI = ""
 	}
 	fields := []struct {
 		name, value string
@@ -100,7 +106,6 @@ func validate(baseURL string, m *Metadata) error {
 		{"authorization_endpoint", m.AuthorizationEndpoint, true},
 		{"revocation_endpoint", m.RevocationEndpoint, false},
 		{"device_authorization_endpoint", m.DeviceAuthorizationEndpoint, false},
-		{"webda_result_uri", m.ResultURI, false},
 		{"webda_operations_uri", m.OperationsURI, false},
 	}
 	for _, f := range fields {
@@ -110,7 +115,7 @@ func validate(baseURL string, m *Metadata) error {
 			}
 			continue
 		}
-		if got, ok := origin(f.value); !ok || got != want {
+		if Origin(f.value) != want {
 			return fmt.Errorf("oauth discovery: %s %q is not on the server origin", f.name, f.value)
 		}
 	}

@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"html"
 	"net"
@@ -65,7 +66,7 @@ func (l *Loopback) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Gone", http.StatusGone)
 		return
 	}
-	if !l.armed || q.Get("state") == "" || q.Get("state") != l.state {
+	if !l.armed || q.Get("state") == "" || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(l.state)) != 1 {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -85,12 +86,16 @@ func (l *Loopback) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (l *Loopback) respond(w http.ResponseWriter, r *http.Request, ok bool, code string) {
-	if l.resultURL != "" {
-		target := l.resultURL + "?status=success"
-		if !ok {
-			target = l.resultURL + "?status=error&error=" + url.QueryEscape(code)
+	if target, err := url.Parse(l.resultURL); l.resultURL != "" && err == nil {
+		q := target.Query()
+		if ok {
+			q.Set("status", "success")
+		} else {
+			q.Set("status", "error")
+			q.Set("error", code)
 		}
-		http.Redirect(w, r, target, http.StatusFound)
+		target.RawQuery = q.Encode()
+		http.Redirect(w, r, target.String(), http.StatusFound)
 		return
 	}
 	msg := "Signed in. You can close this window."
@@ -101,22 +106,38 @@ func (l *Loopback) respond(w http.ResponseWriter, r *http.Request, ok bool, code
 	_, _ = fmt.Fprintf(w, "<!doctype html><meta charset=\"utf-8\"><title>webda</title><p>%s</p>", html.EscapeString(msg))
 }
 
-// Wait blocks until the callback with the given state arrives (returns the code), an authorization
-// error (returns *Error), ctx is done, or timeout. Stray requests never end the wait.
-func (l *Loopback) Wait(ctx context.Context, state, resultURL string, timeout time.Duration) (string, error) {
+// Arm sets the expected state and the result page before the browser is opened, so a callback that
+// arrives immediately (remembered consent) is accepted. Callbacks before Arm are refused.
+func (l *Loopback) Arm(state, resultURL string) {
 	l.mu.Lock()
 	l.state, l.resultURL, l.armed = state, resultURL, true
 	l.mu.Unlock()
+}
+
+// Wait blocks until the armed callback arrives (returns the code), an authorization error (returns *Error),
+// ctx is done, or timeout. Stray requests never end the wait; once Wait returns, later callbacks get 410.
+func (l *Loopback) Wait(ctx context.Context, timeout time.Duration) (string, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	var err error
 	select {
 	case res := <-l.result:
 		return res.code, res.err
 	case <-ctx.Done():
-		return "", ctx.Err()
+		err = ctx.Err()
 	case <-timer.C:
-		return "", fmt.Errorf("sign-in timed out (%d minutes)", int(timeout.Minutes()))
+		err = fmt.Errorf("sign-in timed out (%s)", timeout)
 	}
+	l.mu.Lock()
+	l.done = true
+	l.mu.Unlock()
+	// a callback may have been accepted just before done was set
+	select {
+	case res := <-l.result:
+		return res.code, res.err
+	default:
+	}
+	return "", err
 }
 
 // Close shuts the listener down.

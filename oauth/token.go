@@ -38,13 +38,13 @@ type Error struct {
 
 func (e *Error) Error() string {
 	if e.Description != "" {
-		return fmt.Sprintf("oauth error %s: %s", sanitize(e.Code), sanitize(e.Description))
+		return fmt.Sprintf("oauth error %s: %s", Sanitize(e.Code), Sanitize(e.Description))
 	}
-	return "oauth error " + sanitize(e.Code)
+	return "oauth error " + Sanitize(e.Code)
 }
 
-// sanitize drops control characters (including ESC) from server-provided text.
-func sanitize(s string) string {
+// Sanitize drops control characters (including ESC) from server-provided text before it is printed.
+func Sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return -1

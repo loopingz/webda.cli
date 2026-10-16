@@ -158,6 +158,45 @@ func TestDiscoverRejectsOtherOrigin(t *testing.T) {
 	}
 }
 
+func TestDiscoverDropsCrossOriginResultURI(t *testing.T) {
+	m := &Metadata{Issuer: "http://h", TokenEndpoint: "http://h/t", AuthorizationEndpoint: "http://h/a",
+		ResultURI: "https://app.example.com/oauth/done", OperationsURI: "http://h/ops"}
+	if err := validate("http://h", m); err != nil {
+		t.Fatalf("a cross-origin result page must not reject discovery: %v", err)
+	}
+	if m.ResultURI != "" || m.OperationsURI != "http://h/ops" {
+		t.Fatalf("result URI must be dropped (built-in page): %+v", m)
+	}
+	m.ResultURI = "http://h/oauth/done"
+	if err := validate("http://h", m); err != nil || m.ResultURI != "http://h/oauth/done" {
+		t.Fatalf("same-origin result URI is kept: %+v %v", m, err)
+	}
+	m.OperationsURI = "http://evil/ops"
+	if validate("http://h", m) == nil {
+		t.Fatal("webda_operations_uri on another origin must fail")
+	}
+}
+
+func TestOrigin(t *testing.T) {
+	cases := map[string]string{
+		"https://H.example.com/x": "https://h.example.com:443",
+		"http://h:8080":           "http://h:8080",
+		"/relative":               "",
+		"::":                      "",
+	}
+	for in, want := range cases {
+		if got := Origin(in); got != want {
+			t.Errorf("Origin(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestSanitize(t *testing.T) {
+	if got := Sanitize("ab\x1b[31mc\n"); got != "ab[31mc" {
+		t.Fatalf("%q", got)
+	}
+}
+
 func TestDiscoverOtherOriginServer(t *testing.T) {
 	other := httptest.NewServer(http.NotFoundHandler())
 	defer other.Close()
