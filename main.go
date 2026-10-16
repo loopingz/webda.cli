@@ -177,8 +177,25 @@ func parseOperations(body []byte) ([]Operation, error) {
 			ops[i].Source = "operations"
 		}
 	}
-	sort.SliceStable(ops, func(i, j int) bool { return ops[i].Name < ops[j].Name })
-	return ops, nil
+	sort.SliceStable(ops, func(i, j int) bool {
+		a, b := ops[i], ops[j]
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		if a.Method != b.Method {
+			return a.Method < b.Method
+		}
+		return a.Path < b.Path
+	})
+	unique := ops[:0]
+	for _, op := range ops {
+		if n := len(unique); n > 0 && unique[n-1].Name == op.Name {
+			fmt.Fprintf(os.Stderr, "Warning: skipping duplicate operation %q (%s %s)\n", op.Name, op.Method, op.Path)
+			continue
+		}
+		unique = append(unique, op)
+	}
+	return unique, nil
 }
 
 func parseOperationsRaw(body []byte) ([]Operation, error) {

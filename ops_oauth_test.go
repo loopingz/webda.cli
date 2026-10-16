@@ -232,3 +232,48 @@ func TestOptionalMetadataFallsBackToNil(t *testing.T) {
 		t.Fatalf("expected nil metadata, got %+v", m)
 	}
 }
+
+func TestOperationsSortedAndDeduplicated(t *testing.T) {
+	doc := `{"openapi":"3.0.0","paths":{
+	  "/b":{"post":{"operationId":"Dup"},"get":{"operationId":"Dup"}},
+	  "/a":{"get":{"operationId":"Dup"},"delete":{"operationId":"Alpha"}}}}`
+	ops, err := parseOperations([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 2 || ops[0].Name != "Alpha" || ops[1].Name != "Dup" {
+		t.Fatalf("unexpected %+v", ops)
+	}
+	// ordered by method then path: GET /a comes first and is kept.
+	if ops[1].Method != "GET" || ops[1].Path != "/a" {
+		t.Fatalf("expected GET /a to be kept, got %+v", ops[1])
+	}
+}
+
+func TestParseOpenAPIRejectsRelativePaths(t *testing.T) {
+	doc := `{"openapi":"3.0.0","paths":{"tasks":{"get":{"operationId":"Bad"}},"/ok":{"get":{"operationId":"Good"}}}}`
+	ops, err := parseOperations([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 1 || ops[0].Name != "Good" {
+		t.Fatalf("relative path must be skipped: %+v", ops)
+	}
+}
+
+func TestOpenAPIRejectsDotPathParameters(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	op := Operation{Name: "Task.Get", Source: "openapi", Method: "GET", Path: "/tasks/{uuid}"}
+	for _, v := range []string{".", ".."} {
+		if _, err := executeOperation(context.Background(), op, testClient(t, srv.URL), srv.URL, map[string]any{"uuid": v}); err == nil {
+			t.Fatalf("%q must be rejected", v)
+		}
+	}
+	if called {
+		t.Fatal("no request must be sent")
+	}
+}

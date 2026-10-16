@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -23,6 +24,10 @@ func parseOpenAPI(doc map[string]any) []Operation {
 	}
 	var out []Operation
 	for pth, v := range paths {
+		if !strings.HasPrefix(pth, "/") {
+			fmt.Fprintf(os.Stderr, "Warning: skipping OpenAPI path %q: it must start with /\n", pth)
+			continue
+		}
 		item, ok := v.(map[string]any)
 		if !ok {
 			continue
@@ -154,7 +159,7 @@ func buildRequest(ctx context.Context, op Operation, baseURL string, input map[s
 		return req, err
 	}
 	rest := copyMap(input)
-	var missing []string
+	var missing, invalid []string
 	target := pathParamRegexp.ReplaceAllStringFunc(op.Path, func(m string) string {
 		name := m[1 : len(m)-1]
 		v, ok := rest[name]
@@ -163,10 +168,17 @@ func buildRequest(ctx context.Context, op Operation, baseURL string, input map[s
 			return m
 		}
 		delete(rest, name)
-		return url.PathEscape(fmt.Sprint(v))
+		value := fmt.Sprint(v)
+		if value == "." || value == ".." {
+			invalid = append(invalid, name)
+		}
+		return url.PathEscape(value)
 	})
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("%s: missing path parameter %s", op.Name, strings.Join(missing, ", "))
+	}
+	if len(invalid) > 0 {
+		return nil, fmt.Errorf("%s: invalid path parameter %s", op.Name, strings.Join(invalid, ", "))
 	}
 	method := op.Method
 	if method == "" {
