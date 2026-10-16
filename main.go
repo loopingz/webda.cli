@@ -188,12 +188,13 @@ func parseOperations(body []byte) ([]Operation, error) {
 		return a.Path < b.Path
 	})
 	unique := ops[:0]
-	for _, op := range ops {
+	for i := range ops {
+		op := &ops[i]
 		if n := len(unique); n > 0 && unique[n-1].Name == op.Name {
 			fmt.Fprintf(os.Stderr, "Warning: skipping duplicate operation %q (%s %s)\n", op.Name, op.Method, op.Path)
 			continue
 		}
-		unique = append(unique, op)
+		unique = append(unique, *op)
 	}
 	return unique, nil
 }
