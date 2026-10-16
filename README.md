@@ -129,6 +129,19 @@ Host mappings are stored in `~/.webdacli/config.yaml`:
 myapp: https://app.example.com
 staging: https://staging.example.com
 wlocal: http://localhost:18080
+lc:
+  url: https://my.loopingz.com
+  client_id: webda-cli
+  scope: "* offline_access"
+update: prompt
+```
+
+A profile is either a URL string or an object with `url` and optional `client_id`
+(default `webda-cli`) and `scope` (default `"* offline_access"`). Set them with
+`setup`:
+
+```bash
+myapp setup --name lc --url https://my.loopingz.com --client-id webda-cli --scope "* offline_access"
 ```
 
 The binary name remains the default profile, so existing symlinks work. Use
@@ -142,13 +155,51 @@ run `refresh-operations` to update it.
 
 ## Authentication
 
-On first run, the CLI opens a browser for authentication. The token is stored in `~/.webdacli/<name>.tok` and automatically refreshed in the background.
+Sign-in uses OAuth 2.0 with PKCE. On first use, or with `myapp auth`, the CLI opens
+your browser so you can sign in and choose which operations it may call. Tokens are
+refreshed automatically (refresh tokens rotate, and concurrent requests share a
+single refresh). The access token is only ever sent to the profile's server.
 
 ```bash
-myapp              # opens browser for auth on first run
-myapp auth         # re-authenticate
-myapp whoami       # show current user info
+myapp auth                         # sign in (or sign in again)
+myapp auth --scope "Task.* offline_access"   # request a narrower scope
+myapp auth --device                # sign in with a code instead of a browser
+myapp auth --prompt consent        # browser flow only: login, consent or none
+myapp whoami                       # show current user info
+myapp logout                       # revoke the sign-in and forget it
 ```
+
+- `--scope` overrides the profile scope for this sign-in.
+- The device flow shows a verification URL, a code and a terminal QR code; approve it
+  on any device. It is used automatically over SSH (`SSH_CONNECTION`), on Linux
+  without `DISPLAY` or `WAYLAND_DISPLAY`, and when no browser can be opened.
+  `--prompt` applies to the browser flow only.
+- Without a terminal (scripts, CI), a first use that needs a sign-in fails fast with
+  `run myapp auth`; run it once interactively.
+- A failed re-authentication keeps your previous sign-in. A successful one revokes
+  the previous refresh token.
+- `logout` revokes the refresh token on the server, then deletes it locally.
+- Sign-ins saved by older versions of the CLI are discarded once; sign in again.
+- Connected apps can also be revoked from the web app.
+- When a token does not cover an operation, the CLI prints
+  `this token does not cover <operation>; run myapp auth --scope ...` so you can
+  request it.
+
+### Token storage
+
+Tokens go to the OS keychain (service `webda-cli`, one entry per profile). Without a
+keychain they are stored in an encrypted file, `~/.webdacli/<profile>.tok`, keyed with
+the SSH agent or, failing that, the machine.
+
+OAuth server metadata is cached in `~/.webdacli/<profile>.oauth.json`. It is checked
+to be same-origin with the profile URL and is discovered again when invalid.
+
+### Server requirements
+
+OAuth sign-in needs a Webda server running `@webda/oauth` (`OAuthServer`); against
+other servers `auth` stops with `this server does not support OAuth sign-in`.
+Operations come from `/operations` (`Webda/OperationsTransport`) or, when that is not
+available, from the REST OpenAPI document served when `exposeOpenAPI` is enabled.
 
 ## Operations
 
@@ -304,7 +355,8 @@ This runs `go vet`, `golangci-lint`, and `go test -race` automatically.
 | Path | Purpose |
 |---|---|
 | `~/.webdacli/config.yaml` | Host mappings |
-| `~/.webdacli/<name>.tok` | Authentication tokens |
+| `~/.webdacli/<name>.tok` | Encrypted tokens (only when no OS keychain is available) |
+| `~/.webdacli/<name>.oauth.json` | Cached OAuth server metadata |
 | `~/.webdacli/<name>.operations` | Cached operations spec |
 | `~/.webdacli/<name>.logo` | Cached logo image |
 | `~/.webdacli/<profile>.history.json` | Favorite and recent operation names |
