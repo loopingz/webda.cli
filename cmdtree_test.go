@@ -416,8 +416,7 @@ func TestMakeOperationRunE_PostsToServer(t *testing.T) {
 	defer srv.Close()
 
 	store := tokenstore.NewMachineStore(t.TempDir())
-	client, _ := webdaclient.New("test", srv.URL, store)
-	defer client.Close()
+	client, _ := webdaclient.New("test", srv.URL, store, nil, "webda-cli", nil)
 
 	op := Operation{
 		Name: "TestOp",

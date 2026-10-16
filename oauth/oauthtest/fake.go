@@ -26,19 +26,38 @@ type Server struct {
 	AcceptAnyVerifier bool
 	// NoRevocation omits revocation_endpoint from the discovery document.
 	NoRevocation bool
-	counter      int
+	// TokenStatus, when non-zero, makes the token endpoint answer this status with temporarily_unavailable.
+	TokenStatus int
+	// KeepRefresh makes refresh grants answer without a refresh_token and keep the presented one live (no rotation).
+	KeepRefresh bool
+	mux         *http.ServeMux
+	counter     int
+	access      string
 }
 
 // New starts a fake server; callers must Close it.
 func New() *Server {
 	s := &Server{Codes: map[string]string{}, Refresh: map[string]bool{"r0": true}}
 	mux := http.NewServeMux()
+	s.mux = mux
 	mux.HandleFunc("/.well-known/oauth-authorization-server", s.metadata)
 	mux.HandleFunc("/oauth/token", s.token)
 	mux.HandleFunc("/oauth/revoke", s.revoke)
 	mux.HandleFunc("/oauth/device_authorization", s.device)
 	s.Server = httptest.NewServer(mux)
 	return s
+}
+
+// Handle registers an extra handler (for example a protected API route) on the fake server.
+func (s *Server) Handle(pattern string, h http.Handler) {
+	s.mux.Handle(pattern, h)
+}
+
+// CurrentAccessToken returns the last access token issued ("" before any).
+func (s *Server) CurrentAccessToken() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.access
 }
 
 func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +84,7 @@ func (s *Server) issue() map[string]any {
 	s.counter++
 	n := strconv.Itoa(s.counter)
 	s.Refresh["r"+n] = true
+	s.access = "a" + n
 	return map[string]any{"access_token": "a" + n, "token_type": "Bearer", "expires_in": 900, "scope": "*", "refresh_token": "r" + n}
 }
 
@@ -75,6 +95,10 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	if r.Form.Get("client_id") == "" {
 		writeJSON(w, 400, map[string]string{"error": "invalid_request"})
+		return
+	}
+	if s.TokenStatus != 0 {
+		writeJSON(w, s.TokenStatus, map[string]string{"error": "temporarily_unavailable"})
 		return
 	}
 	switch r.Form.Get("grant_type") {
@@ -91,6 +115,13 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		rt := r.Form.Get("refresh_token")
 		if !s.Refresh[rt] {
 			writeJSON(w, 400, map[string]string{"error": "invalid_grant"})
+			return
+		}
+		if s.KeepRefresh {
+			tokens := s.issue()
+			delete(s.Refresh, tokens["refresh_token"].(string))
+			delete(tokens, "refresh_token")
+			writeJSON(w, 200, tokens)
 			return
 		}
 		delete(s.Refresh, rt) // rotation: single use

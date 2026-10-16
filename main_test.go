@@ -446,12 +446,11 @@ func TestFetchCurrentUser_Success(t *testing.T) {
 	// Set up global cli
 	origCli := cli
 	var err error
-	cli, err = webdaclient.New("test", srv.URL, store)
+	cli, err = webdaclient.New("test", srv.URL, store, nil, "webda-cli", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		cli.Close()
 		cli = origCli
 	}()
 
@@ -476,9 +475,8 @@ func TestFetchCurrentUser_Unauthorized(t *testing.T) {
 	// No token saved → client has no auth header
 
 	origCli := cli
-	cli, _ = webdaclient.New("test", srv.URL, store)
+	cli, _ = webdaclient.New("test", srv.URL, store, nil, "webda-cli", nil)
 	defer func() {
-		cli.Close()
 		cli = origCli
 	}()
 
@@ -505,9 +503,8 @@ func TestFetchOperations_Success(t *testing.T) {
 	})
 
 	origCli := cli
-	cli, _ = webdaclient.New("test", srv.URL, store)
+	cli, _ = webdaclient.New("test", srv.URL, store, nil, "webda-cli", nil)
 	defer func() {
-		cli.Close()
 		cli = origCli
 	}()
 
@@ -540,9 +537,8 @@ func TestFetchOperations_Unauthorized(t *testing.T) {
 	// No token → no auth
 
 	origCli := cli
-	cli, _ = webdaclient.New("test", srv.URL, store)
+	cli, _ = webdaclient.New("test", srv.URL, store, nil, "webda-cli", nil)
 	defer func() {
-		cli.Close()
 		cli = origCli
 	}()
 

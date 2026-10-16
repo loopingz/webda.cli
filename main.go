@@ -250,9 +250,18 @@ func buildRootCommand(name, baseURL string) *cobra.Command {
 
 func main() {
 	if err := runCLI(); err != nil {
+		if errors.Is(err, webdaclient.ErrSignedOut) {
+			fmt.Fprintln(os.Stderr, signedOutMessage(filepath.Base(os.Args[0])))
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
+}
+
+// signedOutMessage is printed when the server refused the refresh token.
+func signedOutMessage(bin string) string {
+	return fmt.Sprintf("Your sign-in expired or was revoked; run %s auth.", bin)
 }
 
 func runCLI() error {
@@ -326,11 +335,14 @@ func runCLI() error {
 	if err := authenticate(ctx, env, tokenStore, invoked, profile, prof, terminalInput(os.Stdin) && terminalOutput(os.Stderr)); err != nil {
 		return err
 	}
-	cli, err = webdaclient.New(profile, baseURL, tokenStore)
+	meta, err := metadataFor(ctx, env, profile, prof)
 	if err != nil {
 		return err
 	}
-	defer cli.Close()
+	cli, err = webdaclient.New(profile, baseURL, tokenStore, meta, prof.EffectiveClientID(), nil)
+	if err != nil {
+		return err
+	}
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, timeout)
 	remoteOps, info, fetchErr := fetchOperations(fetchCtx, profile)
 	fetchCancel()
@@ -338,7 +350,7 @@ func runCLI() error {
 	case fetchErr == nil:
 		ops = remoteOps
 		serverInfo = info
-	case len(ops) == 0:
+	case len(ops) == 0, errors.Is(fetchErr, webdaclient.ErrSignedOut):
 		return fetchErr
 	default:
 		fmt.Fprintf(os.Stderr, "Using cached operations: %v\n", fetchErr)
