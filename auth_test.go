@@ -385,22 +385,97 @@ func TestAuthenticateLegacyTokenSignsInAgainWithTerminal(t *testing.T) {
 	}
 }
 
-func TestAuthenticateDeviceFlowWithoutTerminal(t *testing.T) {
+func TestAuthenticateWithoutTerminalFailsFastEvenForTheDeviceFlow(t *testing.T) {
 	s := oauthtest.New()
 	defer s.Close()
-	env, _ := testEnv(t, nil)
+	env, _ := testEnv(t, func(string) error { t.Fatal("browser opened"); return nil })
 	env.Getenv = func(k string) string {
 		if k == "SSH_CONNECTION" {
 			return "1.2.3.4 22 5.6.7.8 22"
 		}
 		return ""
 	}
+	err := authenticate(context.Background(), env, newMemStore(), "bin", "p", Profile{URL: s.URL}, false)
+	if err == nil || err.Error() != "profile p needs authentication; run bin auth" {
+		t.Fatalf("got %v", err)
+	}
+	if got := atomic.LoadInt32(&s.TokenCalls); got != 0 {
+		t.Fatalf("no sign-in expected, token calls %d", got)
+	}
+}
+
+func TestAuthCommandKeepsThePreviousTokenOnFailure(t *testing.T) {
+	s := oauthtest.New()
+	defer s.Close()
+	s.DeviceAnswers = []string{"access_denied"}
+	env, _ := testEnv(t, nil)
+	orig := tokenStore
 	store := newMemStore()
-	if err := authenticate(context.Background(), env, store, "bin", "p", Profile{URL: s.URL}, false); err != nil {
+	tokenStore = store
+	defer func() { tokenStore = orig }()
+	_ = store.Save("p", tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+	cmd := newAuthCmd(env, "p", Profile{URL: s.URL})
+	cmd.SetIn(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--device"})
+	cmd.SetContext(context.Background())
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "access_denied") {
+		t.Fatalf("got %v", err)
+	}
+	if ti, err := store.Load("p"); err != nil || ti.RefreshToken != "r0" {
+		t.Fatalf("previous token lost: %+v %v", ti, err)
+	}
+	if len(s.Revoked) != 0 {
+		t.Fatalf("revoked %v", s.Revoked)
+	}
+}
+
+func TestAuthCommandRevokesThePreviousTokenOnSuccess(t *testing.T) {
+	s := oauthtest.New()
+	defer s.Close()
+	env, _ := testEnv(t, nil)
+	orig := tokenStore
+	store := newMemStore()
+	tokenStore = store
+	defer func() { tokenStore = orig }()
+	_ = store.Save("p", tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+	cmd := newAuthCmd(env, "p", Profile{URL: s.URL})
+	cmd.SetIn(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--device"})
+	cmd.SetContext(context.Background())
+	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Load("p"); err != nil {
+	ti, _ := store.Load("p")
+	if ti.RefreshToken == "r0" || ti.RefreshToken == "" {
+		t.Fatalf("%+v", ti)
+	}
+	if len(s.Revoked) != 1 || s.Revoked[0] != "r0" {
+		t.Fatalf("revoked %v", s.Revoked)
+	}
+}
+
+func TestAuthCommandWithoutRevocationEndpoint(t *testing.T) {
+	s := oauthtest.New()
+	defer s.Close()
+	s.NoRevocation = true
+	env, out := testEnv(t, nil)
+	orig := tokenStore
+	store := newMemStore()
+	tokenStore = store
+	defer func() { tokenStore = orig }()
+	_ = store.Save("p", tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+	cmd := newAuthCmd(env, "p", Profile{URL: s.URL})
+	cmd.SetIn(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--device"})
+	cmd.SetContext(context.Background())
+	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
+	}
+	if len(s.Revoked) != 0 || strings.Contains(out.String(), "Warning") {
+		t.Fatalf("revoked %v output %q", s.Revoked, out.String())
 	}
 }
 
@@ -454,6 +529,9 @@ func TestAuthCommand(t *testing.T) {
 	ti, _ := store.Load("p")
 	if ti.Legacy() || ti.RefreshToken == "old-r" || ti.RefreshToken == "" {
 		t.Fatalf("%+v", ti)
+	}
+	if len(s.Revoked) != 0 {
+		t.Fatalf("a legacy token is never sent to the OAuth server: %v", s.Revoked)
 	}
 }
 

@@ -252,7 +252,7 @@ func authenticate(ctx context.Context, env authEnv, store tokenstore.TokenStore,
 	if ok {
 		return nil
 	}
-	if !interactive && !useDeviceFlow(env, authOptions{}) {
+	if !interactive {
 		if legacy {
 			_, _ = fmt.Fprintln(env.Out, "Your saved sign-in is from an older version and was removed.")
 		}
@@ -286,20 +286,30 @@ func newAuthCmd(env authEnv, profile string, prof Profile) *cobra.Command {
 		if !useDeviceFlow(env, opts) && (!terminalInput(cmd.InOrStdin()) || !terminalOutput(cmd.ErrOrStderr())) {
 			return fmt.Errorf("auth requires a terminal; use --device to sign in with a code")
 		}
-		if _, err := tokenStore.Load(profile); err == nil {
+		previous, loadErr := tokenStore.Load(profile)
+		if loadErr == nil && previous.Legacy() {
+			// a legacy token is never kept nor sent to the OAuth server
 			if err := tokenStore.Delete(profile); err != nil {
 				return err
 			}
+			previous = tokenstore.TokenInfo{}
 		}
-		if _, err := signIn(cmd.Context(), env, tokenStore, profile, prof, opts); err != nil {
+		// the previous token stays stored until signIn saves the new one
+		ti, err := signIn(cmd.Context(), env, tokenStore, profile, prof, opts)
+		if err != nil {
 			return err
 		}
-		_, err := fmt.Fprintf(cmd.ErrOrStderr(), "Signed in to %s.\n", profile)
+		if loadErr == nil && previous.RefreshToken != "" && previous.RefreshToken != ti.RefreshToken {
+			if err := revoke(cmd.Context(), env, profile, prof, previous.RefreshToken); err != nil {
+				_, _ = fmt.Fprintf(env.Out, "Warning: could not revoke the previous sign-in on the server: %v\n", err)
+			}
+		}
+		_, err = fmt.Fprintf(cmd.ErrOrStderr(), "Signed in to %s.\n", profile)
 		return err
 	}}
 	cmd.Flags().String("scope", "", "OAuth scope to request (default: the profile scope)")
 	cmd.Flags().Bool("device", false, "sign in with a code shown in the terminal instead of opening a browser")
-	cmd.Flags().String("prompt", "", "ask the server to force a login, consent or none")
+	cmd.Flags().String("prompt", "", "browser flow only: ask the server for login, consent or none")
 	return cmd
 }
 
