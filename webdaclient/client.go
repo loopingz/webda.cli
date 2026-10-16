@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/loopingz/webda.cli/filelock"
 	"github.com/loopingz/webda.cli/oauth"
 	"github.com/loopingz/webda.cli/tokenstore"
 )
@@ -38,6 +38,9 @@ type call struct {
 type Client struct {
 	BaseURL string
 	Name    string
+	// LockFile, when set, is an advisory lock file held around load→refresh→save so concurrent CLI
+	// processes sharing the token store never spend the same rotating refresh token twice.
+	LockFile string
 
 	store    tokenstore.TokenStore
 	meta     *oauth.Metadata
@@ -52,20 +55,49 @@ type Client struct {
 }
 
 // New loads the stored token; refreshing uses the metadata's token endpoint and clientID.
-// A nil hc uses http.DefaultClient. A legacy token (with a sequence) is ignored.
+// A nil hc uses a new http.Client. A legacy token (with a sequence) or a token issued for another server is ignored.
+// The client never forwards the access token on a redirect that leaves the profile origin.
 func New(name, baseURL string, store tokenstore.TokenStore, meta *oauth.Metadata, clientID string, hc *http.Client) (*Client, error) {
-	if hc == nil {
-		hc = http.DefaultClient
-	}
 	c := &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"), Name: name,
-		store: store, meta: meta, clientID: clientID, hc: hc,
-		origin: originOf(baseURL), stderr: os.Stderr,
+		store: store, meta: meta, clientID: clientID,
+		origin: oauth.Origin(baseURL), stderr: os.Stderr,
 	}
-	if ti, err := store.Load(name); err == nil && !ti.Legacy() {
+	c.hc = c.ownClient(hc)
+	if ti, err := store.Load(name); err == nil && ti.IssuedFor(c.origin) {
 		c.token = ti
 	}
 	return c, nil
+}
+
+// ownClient returns a copy of hc whose redirects drop the Authorization header when they leave the profile origin
+// (other scheme, host, subdomain or port); the redirect policy of hc otherwise still applies.
+func (c *Client) ownClient(hc *http.Client) *http.Client {
+	own := &http.Client{}
+	if hc != nil {
+		*own = *hc
+	}
+	next := own.CheckRedirect
+	own.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if c.origin == "" || oauth.Origin(req.URL.String()) != c.origin {
+			req.Header.Del("Authorization")
+		}
+		if next != nil {
+			return next(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return own
+}
+
+// Scope returns the scope granted to the current token ("" when unknown).
+func (c *Client) Scope() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token.Scope
 }
 
 // Request sends method path (relative to BaseURL) with body through Do.
@@ -80,7 +112,7 @@ func (c *Client) Request(method, path string, body io.Reader) (*http.Response, e
 // Do attaches the bearer (refreshing first when it expires within 60 s), and on a 401 refreshes once and retries.
 // Only requests to the profile origin carry the token; a request whose body cannot be replayed is not retried.
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	if c.origin == "" || originOf(req.URL.String()) != c.origin || req.Header.Get("Authorization") != "" {
+	if c.origin == "" || oauth.Origin(req.URL.String()) != c.origin || req.Header.Get("Authorization") != "" {
 		return c.hc.Do(req)
 	}
 	ctx := req.Context()
@@ -125,13 +157,15 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	return c.hc.Do(retry)
 }
 
-// expiringLocked reports whether the access token is missing or expires within refreshSkew; zero ExpiresAt is unknown (never expiring).
-func (c *Client) expiringLocked(now time.Time) bool {
-	if c.token.AccessToken == "" {
-		return c.token.RefreshToken != ""
+// expiring reports whether the access token is missing or expires within refreshSkew; zero ExpiresAt is unknown (never expiring).
+func expiring(ti tokenstore.TokenInfo, now time.Time) bool {
+	if ti.AccessToken == "" {
+		return ti.RefreshToken != ""
 	}
-	return !c.token.ExpiresAt.IsZero() && now.Add(refreshSkew).After(c.token.ExpiresAt)
+	return !ti.ExpiresAt.IsZero() && now.Add(refreshSkew).After(ti.ExpiresAt)
 }
+
+func (c *Client) expiringLocked(now time.Time) bool { return expiring(c.token, now) }
 
 // accessToken returns the access token to send, refreshing it first when it is about to expire.
 // A transient refresh failure falls back to the current token while it has not expired yet.
@@ -179,7 +213,7 @@ func (c *Client) refresh(ctx context.Context, failed string, unauthorized bool) 
 	go func() {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 		defer cancel()
-		err := c.exchange(rctx, previous)
+		err := c.exchange(rctx, previous, failed)
 		c.mu.Lock()
 		c.inflight = nil
 		c.mu.Unlock()
@@ -206,8 +240,26 @@ func (c *Client) wait(ctx context.Context, cl *call) (string, error) {
 // refusedCodes are the token endpoint errors that mean the refresh token will never work again.
 var refusedCodes = map[string]bool{"invalid_grant": true, "invalid_client": true, "unauthorized_client": true}
 
-// exchange runs the refresh_token grant, saving the rotated token before it is used.
-func (c *Client) exchange(ctx context.Context, previous tokenstore.TokenInfo) error {
+// exchange runs the refresh_token grant, saving the rotated token before it is used. Under the lock file it first
+// reloads the store: when another process already rotated the refresh token, its token is adopted (or refreshed).
+func (c *Client) exchange(ctx context.Context, previous tokenstore.TokenInfo, failed string) error {
+	if c.LockFile != "" {
+		release, err := filelock.Lock(ctx, c.LockFile)
+		if err != nil {
+			return fmt.Errorf("token refresh failed: %w", err)
+		}
+		defer release()
+	}
+	if stored, err := c.store.Load(c.Name); err == nil && stored.IssuedFor(c.origin) &&
+		stored.RefreshToken != "" && stored.RefreshToken != previous.RefreshToken {
+		if stored.AccessToken != "" && stored.AccessToken != failed && !expiring(stored, time.Now()) {
+			c.mu.Lock()
+			c.token = stored
+			c.mu.Unlock()
+			return nil
+		}
+		previous = stored
+	}
 	if c.meta == nil || c.meta.TokenEndpoint == "" {
 		return errors.New("token refresh failed: the server does not advertise a token endpoint")
 	}
@@ -228,6 +280,7 @@ func (c *Client) exchange(ctx context.Context, previous tokenstore.TokenInfo) er
 		RefreshToken: t.RefreshToken,
 		ExpiresAt:    t.ExpiresAt(time.Now()),
 		Scope:        t.Scope,
+		Server:       c.origin,
 	}
 	if ti.RefreshToken == "" {
 		ti.RefreshToken = previous.RefreshToken
@@ -244,23 +297,4 @@ func (c *Client) exchange(ctx context.Context, previous tokenstore.TokenInfo) er
 	c.token = ti
 	c.mu.Unlock()
 	return nil
-}
-
-// originOf returns scheme://host:port with the default port made explicit ("" when raw is not absolute).
-func originOf(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || !u.IsAbs() || u.Hostname() == "" {
-		return ""
-	}
-	scheme := strings.ToLower(u.Scheme)
-	port := u.Port()
-	if port == "" {
-		switch scheme {
-		case "https":
-			port = "443"
-		case "http":
-			port = "80"
-		}
-	}
-	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
 }

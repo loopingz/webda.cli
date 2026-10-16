@@ -11,6 +11,9 @@ type TokenInfo struct {
 	AccessToken  string    `json:"access_token"`
 	ExpiresAt    time.Time `json:"expires_at,omitempty"`
 	Scope        string    `json:"scope,omitempty"`
+	// Server is the origin (scheme://host:port) of the server the token was issued for; empty for tokens saved
+	// before this field existed.
+	Server string `json:"server,omitempty"`
 	// Sequence is only read to detect tokens of the legacy /auth/cli sign-in; never written.
 	Sequence string `json:"sequence,omitempty"`
 }
@@ -18,6 +21,15 @@ type TokenInfo struct {
 // Legacy reports a token of the legacy sign-in (it has a sequence), which the OAuth flow cannot refresh.
 func (t TokenInfo) Legacy() bool {
 	return t.Sequence != ""
+}
+
+// IssuedFor reports whether the token may be sent to the server of the given origin: a token saved for
+// another server never is; a token without Server (saved before the field existed) is accepted unless legacy.
+func (t TokenInfo) IssuedFor(origin string) bool {
+	if t.Legacy() {
+		return false
+	}
+	return t.Server == "" || t.Server == origin
 }
 
 // TokenStore abstracts token persistence across backends.
