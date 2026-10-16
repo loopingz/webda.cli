@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSSHAgentStore_DeriveKeyAndRoundtrip(t *testing.T) {
@@ -18,7 +19,7 @@ func TestSSHAgentStore_DeriveKeyAndRoundtrip(t *testing.T) {
 		deriveKey: func(name string) ([32]byte, error) { return key, nil },
 	}
 
-	ti := TokenInfo{RefreshToken: "ssh-rt", AccessToken: "ssh-at", Sequence: "7"}
+	ti := TokenInfo{RefreshToken: "ssh-rt", AccessToken: "ssh-at", ExpiresAt: time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC), Scope: "s7"}
 	if err := store.Save("ssh-test", ti); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
@@ -28,7 +29,7 @@ func TestSSHAgentStore_DeriveKeyAndRoundtrip(t *testing.T) {
 	if len(data) == 0 {
 		t.Fatal("expected encrypted file to exist")
 	}
-	if string(data) == `{"refresh_token":"ssh-rt","access_token":"ssh-at","sequence":"7"}` {
+	if string(data) == `{"refresh_token":"ssh-rt","access_token":"ssh-at","scope":"s7"}` {
 		t.Fatal("file should be encrypted, not plaintext")
 	}
 
@@ -36,7 +37,7 @@ func TestSSHAgentStore_DeriveKeyAndRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if loaded.RefreshToken != "ssh-rt" || loaded.AccessToken != "ssh-at" || loaded.Sequence != "7" {
+	if loaded.RefreshToken != "ssh-rt" || loaded.AccessToken != "ssh-at" || loaded.Scope != "s7" || !loaded.ExpiresAt.Equal(ti.ExpiresAt) || loaded.Legacy() {
 		t.Fatalf("roundtrip failed: got %+v", loaded)
 	}
 }
@@ -49,7 +50,7 @@ func TestSSHAgentStore_Delete(t *testing.T) {
 		deriveKey: func(name string) ([32]byte, error) { return key, nil },
 	}
 
-	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Sequence: "1"}
+	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Scope: "s1"}
 	store.Save("del-test", ti)
 
 	if err := store.Delete("del-test"); err != nil {
@@ -97,7 +98,7 @@ func TestSSHAgentStore_DeriveKeyError(t *testing.T) {
 		deriveKey: func(name string) ([32]byte, error) { return [32]byte{}, fmt.Errorf("no agent") },
 	}
 
-	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Sequence: "1"}
+	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Scope: "s1"}
 	err := store.Save("fail-test", ti)
 	if err == nil {
 		t.Fatal("expected error when deriveKey fails")

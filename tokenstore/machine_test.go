@@ -5,13 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestMachineStore_SaveLoadRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	store := NewMachineStore(dir)
 
-	ti := TokenInfo{RefreshToken: "mrt", AccessToken: "mat", Sequence: "99"}
+	ti := TokenInfo{RefreshToken: "mrt", AccessToken: "mat", ExpiresAt: time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC), Scope: "s99"}
 	if err := store.Save("machine-test", ti); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
@@ -23,7 +24,7 @@ func TestMachineStore_SaveLoadRoundtrip(t *testing.T) {
 
 	// Token file should be encrypted (not plaintext JSON)
 	data, _ := os.ReadFile(filepath.Join(dir, "machine-test.tok"))
-	if string(data) == `{"refresh_token":"mrt","access_token":"mat","sequence":"99"}` {
+	if string(data) == `{"refresh_token":"mrt","access_token":"mat","scope":"s99"}` {
 		t.Fatal("file should be encrypted, not plaintext")
 	}
 
@@ -31,7 +32,7 @@ func TestMachineStore_SaveLoadRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if loaded.RefreshToken != "mrt" || loaded.AccessToken != "mat" || loaded.Sequence != "99" {
+	if loaded.RefreshToken != "mrt" || loaded.AccessToken != "mat" || loaded.Scope != "s99" || !loaded.ExpiresAt.Equal(ti.ExpiresAt) || loaded.Legacy() {
 		t.Fatalf("roundtrip failed: got %+v", loaded)
 	}
 }
@@ -40,7 +41,7 @@ func TestMachineStore_Delete(t *testing.T) {
 	dir := t.TempDir()
 	store := NewMachineStore(dir)
 
-	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Sequence: "1"}
+	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Scope: "s1"}
 	store.Save("del-test", ti)
 
 	if err := store.Delete("del-test"); err != nil {
@@ -60,7 +61,7 @@ func TestMachineStore_SaltReuse(t *testing.T) {
 	dir := t.TempDir()
 	store := NewMachineStore(dir)
 
-	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Sequence: "1"}
+	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Scope: "s1"}
 	store.Save("reuse-test", ti)
 
 	salt1, _ := os.ReadFile(filepath.Join(dir, "reuse-test.tok.salt"))
@@ -94,7 +95,7 @@ func TestMachineStore_DeriveKeyConsistent(t *testing.T) {
 	store := NewMachineStore(dir)
 
 	// Save creates the salt
-	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Sequence: "1"}
+	ti := TokenInfo{RefreshToken: "r", AccessToken: "a", Scope: "s1"}
 	store.Save("consistent-test", ti)
 
 	// Load uses the same salt → should work

@@ -40,7 +40,7 @@ func TestKeyringStore_Delete(t *testing.T) {
 	keyring.MockInit()
 	store := &KeyringStore{}
 
-	ti := TokenInfo{RefreshToken: "rt", AccessToken: "at", Sequence: "1"}
+	ti := TokenInfo{RefreshToken: "rt", AccessToken: "at", Scope: "s1"}
 	store.Save("del-test", ti)
 
 	if err := store.Delete("del-test"); err != nil {
@@ -64,10 +64,10 @@ func TestKeyringStore_SaveLoadOverwrite(t *testing.T) {
 	keyring.MockInit()
 	store := &KeyringStore{}
 
-	ti := TokenInfo{RefreshToken: "r1", AccessToken: "a1", Sequence: "1"}
+	ti := TokenInfo{RefreshToken: "r1", AccessToken: "a1", Scope: "s1"}
 	store.Save("overwrite-test", ti)
 
-	ti2 := TokenInfo{RefreshToken: "r2", AccessToken: "a2", Sequence: "2"}
+	ti2 := TokenInfo{RefreshToken: "r2", AccessToken: "a2", Scope: "s2"}
 	store.Save("overwrite-test", ti2)
 
 	loaded, err := store.Load("overwrite-test")
