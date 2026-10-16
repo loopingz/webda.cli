@@ -1,12 +1,23 @@
 package tokenstore
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // TokenInfo holds the token data persisted across sessions.
 type TokenInfo struct {
-	RefreshToken string `json:"refresh_token"`
-	AccessToken  string `json:"access_token"`
-	Sequence     string `json:"sequence"`
+	RefreshToken string    `json:"refresh_token"`
+	AccessToken  string    `json:"access_token"`
+	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	Scope        string    `json:"scope,omitempty"`
+	// Sequence is only read to detect tokens of the legacy /auth/cli sign-in; never written.
+	Sequence string `json:"sequence,omitempty"`
+}
+
+// Legacy reports a token of the legacy sign-in (it has a sequence), which the OAuth flow cannot refresh.
+func (t TokenInfo) Legacy() bool {
+	return t.Sequence != ""
 }
 
 // TokenStore abstracts token persistence across backends.
