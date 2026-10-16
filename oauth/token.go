@@ -3,12 +3,14 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Tokens is a token endpoint answer.
@@ -36,13 +38,27 @@ type Error struct {
 
 func (e *Error) Error() string {
 	if e.Description != "" {
-		return fmt.Sprintf("oauth error %s: %s", e.Code, e.Description)
+		return fmt.Sprintf("oauth error %s: %s", sanitize(e.Code), sanitize(e.Description))
 	}
-	return "oauth error " + e.Code
+	return "oauth error " + sanitize(e.Code)
+}
+
+// sanitize drops control characters (including ESC) from server-provided text.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // postForm POSTs a form and returns the body of a 2xx answer, or an *Error.
 func postForm(ctx context.Context, hc *http.Client, endpoint string, v url.Values) ([]byte, error) {
+	if endpoint == "" {
+		return nil, errors.New("oauth: the server does not advertise this endpoint")
+	}
+	hc = noRedirect(hc)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(v.Encode()))
 	if err != nil {
 		return nil, err

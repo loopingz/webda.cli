@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -30,6 +32,7 @@ const maxBody = 1 << 20
 
 // Discover fetches <baseURL>/.well-known/oauth-authorization-server; 404 gives ErrNotSupported.
 func Discover(ctx context.Context, hc *http.Client, baseURL string) (*Metadata, error) {
+	hc = noRedirect(hc)
 	u := strings.TrimRight(baseURL, "/") + "/.well-known/oauth-authorization-server"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -51,10 +54,67 @@ func Discover(ctx context.Context, hc *http.Client, baseURL string) (*Metadata, 
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(&m); err != nil {
 		return nil, fmt.Errorf("oauth discovery: invalid document: %w", err)
 	}
-	if m.TokenEndpoint == "" || m.AuthorizationEndpoint == "" {
-		return nil, errors.New("oauth discovery: document lacks token_endpoint or authorization_endpoint")
+	if err := validate(baseURL, &m); err != nil {
+		return nil, err
 	}
 	return &m, nil
+}
+
+// noRedirect returns a shallow copy of hc that never follows redirects.
+func noRedirect(hc *http.Client) *http.Client {
+	c := *hc
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &c
+}
+
+func origin(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.Hostname() == "" {
+		return "", false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port, true
+}
+
+// validate checks the required endpoints are present and every URL shares the base URL origin.
+func validate(baseURL string, m *Metadata) error {
+	want, ok := origin(baseURL)
+	if !ok {
+		return fmt.Errorf("oauth discovery: invalid base URL %q", baseURL)
+	}
+	fields := []struct {
+		name, value string
+		required    bool
+	}{
+		{"issuer", m.Issuer, true},
+		{"token_endpoint", m.TokenEndpoint, true},
+		{"authorization_endpoint", m.AuthorizationEndpoint, true},
+		{"revocation_endpoint", m.RevocationEndpoint, false},
+		{"device_authorization_endpoint", m.DeviceAuthorizationEndpoint, false},
+		{"webda_result_uri", m.ResultURI, false},
+		{"webda_operations_uri", m.OperationsURI, false},
+	}
+	for _, f := range fields {
+		if f.value == "" {
+			if f.required {
+				return fmt.Errorf("oauth discovery: document lacks %s", f.name)
+			}
+			continue
+		}
+		if got, ok := origin(f.value); !ok || got != want {
+			return fmt.Errorf("oauth discovery: %s %q is not on the server origin", f.name, f.value)
+		}
+	}
+	return nil
 }
 
 type metadataCache struct {
@@ -68,7 +128,7 @@ func LoadOrDiscover(ctx context.Context, hc *http.Client, baseURL, cachePath str
 	if data, err := os.ReadFile(cachePath); err == nil {
 		var c metadataCache
 		if json.Unmarshal(data, &c) == nil && c.BaseURL == base && c.Metadata != nil &&
-			c.Metadata.TokenEndpoint != "" && c.Metadata.AuthorizationEndpoint != "" {
+			validate(base, c.Metadata) == nil {
 			return c.Metadata, nil
 		}
 	}
@@ -80,8 +140,28 @@ func LoadOrDiscover(ctx context.Context, hc *http.Client, baseURL, cachePath str
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(cachePath, data, 0o600); err != nil {
+	if err := writeAtomic(cachePath, data); err != nil {
 		return nil, err
 	}
 	return m, nil
+}
+
+// writeAtomic writes data to a 0600 temp file next to path then renames it over path.
+func writeAtomic(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".oauth-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if err := errors.Join(werr, cerr, os.Chmod(name, 0o600)); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return nil
 }

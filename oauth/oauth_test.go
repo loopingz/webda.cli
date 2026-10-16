@@ -6,8 +6,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,5 +135,134 @@ func TestDevicePolling(t *testing.T) {
 	s.DeviceAnswers = []string{"access_denied"}
 	if _, err := PollDevice(context.Background(), http.DefaultClient, m, "webda-cli", dc, sleep); err == nil {
 		t.Fatal("access_denied must stop polling")
+	}
+}
+
+func TestDiscoverRejectsOtherOrigin(t *testing.T) {
+	m := &Metadata{Issuer: "http://h:80", TokenEndpoint: "http://H/t", AuthorizationEndpoint: "http://h/a"}
+	if err := validate("http://h/base", m); err != nil {
+		t.Fatalf("same origin (case, default port): %v", err)
+	}
+	m.TokenEndpoint = "http://evil/t"
+	if err := validate("http://h", m); err == nil || !strings.Contains(err.Error(), "token_endpoint") {
+		t.Fatalf("want token_endpoint error, got %v", err)
+	}
+	m.TokenEndpoint = "https://h/t"
+	if validate("http://h", m) == nil {
+		t.Fatal("scheme mismatch must fail")
+	}
+	m.TokenEndpoint = "http://h/t"
+	m.RevocationEndpoint = "http://evil/r"
+	if validate("http://h", m) == nil {
+		t.Fatal("revocation_endpoint on another origin must fail")
+	}
+}
+
+func TestDiscoverOtherOriginServer(t *testing.T) {
+	other := httptest.NewServer(http.NotFoundHandler())
+	defer other.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"issuer":"` + other.URL + `","token_endpoint":"` + other.URL + `/t","authorization_endpoint":"` + other.URL + `/a"}`))
+	}))
+	defer srv.Close()
+	if _, err := Discover(context.Background(), http.DefaultClient, srv.URL); err == nil {
+		t.Fatal("other-origin endpoints must be rejected")
+	}
+}
+
+func TestPoisonedCacheIgnored(t *testing.T) {
+	s := oauthtest.New()
+	defer s.Close()
+	cache := filepath.Join(t.TempDir(), "p.oauth.json")
+	poisoned := `{"base_url":"` + s.URL + `","metadata":{"issuer":"` + s.URL + `","token_endpoint":"http://evil/t","authorization_endpoint":"` + s.URL + `/a"}}`
+	if err := os.WriteFile(cache, []byte(poisoned), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadOrDiscover(context.Background(), http.DefaultClient, s.URL, cache)
+	if err != nil || m.TokenEndpoint != s.URL+"/oauth/token" {
+		t.Fatalf("%+v %v", m, err)
+	}
+	st, err := os.Stat(cache)
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("cache mode %v %v", st.Mode(), err)
+	}
+}
+
+func TestDiscoveryRedirectNotFollowed(t *testing.T) {
+	var hit int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hit, 1)
+	}))
+	defer other.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer srv.Close()
+	if _, err := Discover(context.Background(), http.DefaultClient, srv.URL); err == nil {
+		t.Fatal("302 must be an error")
+	}
+	if atomic.LoadInt32(&hit) != 0 {
+		t.Fatal("redirect was followed")
+	}
+}
+
+func TestTokenRedirectNotFollowed(t *testing.T) {
+	var hit int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hit, 1)
+	}))
+	defer other.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	m := &Metadata{TokenEndpoint: srv.URL, RevocationEndpoint: srv.URL}
+	_, err := Refresh(context.Background(), http.DefaultClient, m, "webda-cli", "secret")
+	var oe *Error
+	if !errors.As(err, &oe) || oe.Code != "http_307" {
+		t.Fatalf("want http_307, got %v", err)
+	}
+	if Revoke(context.Background(), http.DefaultClient, m, "webda-cli", "secret") == nil {
+		t.Fatal("revoke redirect must fail")
+	}
+	if atomic.LoadInt32(&hit) != 0 {
+		t.Fatal("the other host received the request")
+	}
+}
+
+func TestEmptyEndpointNoRequest(t *testing.T) {
+	var calls int32
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, errors.New("must not be called")
+	})
+	hc := &http.Client{Transport: rt}
+	m := &Metadata{}
+	ctx := context.Background()
+	if Revoke(ctx, hc, m, "c", "t") == nil {
+		t.Fatal("revoke")
+	}
+	if _, err := Refresh(ctx, hc, m, "c", "t"); err == nil {
+		t.Fatal("refresh")
+	}
+	if _, err := ExchangeCode(ctx, hc, m, "c", "c", "v", "r"); err == nil {
+		t.Fatal("exchange")
+	}
+	if _, err := StartDevice(ctx, hc, m, "c", "s", "h"); err == nil {
+		t.Fatal("device")
+	}
+	if atomic.LoadInt32(&calls) != 0 {
+		t.Fatal("a request was sent")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestErrorStripsControlChars(t *testing.T) {
+	e := &Error{Code: "bad\x1b[31m", Description: "x\x1b[2Jy\x7f\n"}
+	if got := e.Error(); got != "oauth error bad[31m: x[2Jy" {
+		t.Fatalf("%q", got)
 	}
 }
