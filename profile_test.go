@@ -41,7 +41,7 @@ func TestConfig_ModelGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(out), "model_groups: both") {
-		t.Fatalf("marshalled config lost model_groups:\n%s", out)
+		t.Fatalf("marshaled config lost model_groups:\n%s", out)
 	}
 }
 
