@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/loopingz/webda.cli/compare/v1.3.0...v1.4.0) (2026-10-20)
+
+
+### Features
+
+* merge model plural and singular command groups ([#17](https://github.com/loopingz/webda.cli/issues/17)) ([f81b877](https://github.com/loopingz/webda.cli/commit/f81b877a189b3591ad43b6a42090e7dad5f13363))
+
 ## [1.3.0](https://github.com/loopingz/webda.cli/compare/v1.2.0...v1.3.0) (2026-10-16)
 
 
