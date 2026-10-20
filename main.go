@@ -397,7 +397,7 @@ func runCLI() error {
 	})
 	root.AddCommand(newVersionCmd(baseURL, &serverInfo))
 	if localInvocation(args) {
-		buildCommandTree(root, nil, baseURL, ops, serverInfo.Aliases, logoData)
+		buildCommandTree(root, nil, baseURL, ops, serverInfo.Aliases, cfg.ModelGroups, logoData)
 		addExplorer(root, profile, baseURL, ops)
 		root.AddCommand(stubCommand(newAuthCmd(authEnv{}, profile, prof)), stubCommand(newLogoutCmd(authEnv{}, profile, prof)), &cobra.Command{Use: "whoami", Short: "Show current user"}, &cobra.Command{Use: "update", Short: "Update CLI"}, &cobra.Command{Use: "refresh-operations", Short: "Refresh cached operation definitions"})
 		return root.Execute()
@@ -447,7 +447,7 @@ func runCLI() error {
 			logoData = data
 		}
 	}
-	buildCommandTree(root, cli, baseURL, ops, serverInfo.Aliases, logoData)
+	buildCommandTree(root, cli, baseURL, ops, serverInfo.Aliases, cfg.ModelGroups, logoData)
 	root.AddCommand(&cobra.Command{Use: "whoami", Short: "Show current user info", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		timeout, _ := cmd.Flags().GetDuration("timeout")
 		ctx, cancel := context.WithTimeout(cmd.Context(), timeout)

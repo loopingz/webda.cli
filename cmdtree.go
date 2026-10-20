@@ -52,58 +52,98 @@ func splitOperationName(name string) []string {
 	return out
 }
 
+// Values of the model_groups preference.
+const (
+	modelGroupsSingular = "singular"
+	modelGroupsPlural   = "plural"
+	modelGroupsBoth     = "both"
+)
+
+// operationGroups returns the names of the groups an operation goes in, and the alias of the group.
+// aliases maps a model plural to its singular, as listed by the server ("MindNodes" → "MindNode"): model operations use
+// both ("MindNodes.Query", "MindNode.Get") and share the groups. mode picks the group name shell completion offers,
+// the other name being an alias (singular, the default, or plural), or both groups.
+func operationGroups(prefix string, aliases, plurals map[string]string, mode string) (names []string, alias string) {
+	singular, plural := aliases[prefix], prefix
+	if singular == "" {
+		singular, plural = prefix, plurals[prefix]
+	}
+	if plural == "" || plural == singular {
+		return []string{camelToKebab(prefix)}, ""
+	}
+	singular, plural = camelToKebab(singular), camelToKebab(plural)
+	switch mode {
+	case modelGroupsPlural:
+		return []string{plural}, singular
+	case modelGroupsBoth:
+		return []string{singular, plural}, ""
+	default:
+		return []string{singular}, plural
+	}
+}
+
 // buildCommandTree creates nested cobra commands from operations.
 // Operations are split by "." into command groups. Only leaf commands are runnable.
-// aliases maps a model plural to its singular, as listed by the server ("MindNodes" → "MindNode"): the plural
-// operations ("MindNodes.Query") join the singular group, reachable by both names like kubectl's pod/pods.
+// aliases and modelGroups merge the singular and plural groups of a model, see operationGroups.
 // logoData is passed through to operation execution for TUI display.
-func buildCommandTree(root *cobra.Command, client *webdaclient.Client, baseURL string, ops []Operation, aliases map[string]string, logoData []byte) {
+func buildCommandTree(root *cobra.Command, client *webdaclient.Client, baseURL string, ops []Operation, aliases map[string]string, modelGroups string, logoData []byte) {
+	plurals := make(map[string]string, len(aliases))
+	for plural, singular := range aliases {
+		plurals[singular] = plural
+	}
 	for i := range ops {
 		o := ops[i]
 		segments := splitOperationName(o.Name)
-		var alias string
-		if plural, _, ok := strings.Cut(o.Name, "."); ok && aliases[plural] != "" {
-			alias = segments[0]
-			segments[0] = camelToKebab(aliases[plural])
+		if len(segments) == 1 {
+			root.AddCommand(newOperationCommand(o, segments[0], client, baseURL, logoData))
+			continue
 		}
-		parent := root
-		// Create or find intermediate group commands
-		for i := 0; i < len(segments)-1; i++ {
-			seg := segments[i]
-			var found *cobra.Command
-			for _, c := range parent.Commands() {
-				if c.Use == seg || c.HasAlias(seg) {
-					found = c
-					break
+		prefix, _, _ := strings.Cut(o.Name, ".")
+		names, alias := operationGroups(prefix, aliases, plurals, modelGroups)
+		for _, name := range names {
+			segments[0] = name
+			parent := root
+			// Create or find intermediate group commands
+			for i := 0; i < len(segments)-1; i++ {
+				seg := segments[i]
+				var found *cobra.Command
+				for _, c := range parent.Commands() {
+					if c.Use == seg {
+						found = c
+						break
+					}
 				}
+				if found == nil {
+					found = &cobra.Command{Use: seg, Short: fmt.Sprintf("%s commands", seg)}
+					if i == 0 && alias != "" {
+						found.Aliases = []string{alias}
+					}
+					parent.AddCommand(found)
+				}
+				parent = found
 			}
-			if found == nil {
-				found = &cobra.Command{Use: seg, Short: fmt.Sprintf("%s commands", seg)}
-				parent.AddCommand(found)
-			}
-			if i == 0 && alias != "" && alias != seg && !found.HasAlias(alias) {
-				found.Aliases = append(found.Aliases, alias)
-			}
-			parent = found
+			parent.AddCommand(newOperationCommand(o, segments[len(segments)-1], client, baseURL, logoData))
 		}
-		// Create leaf command
-		leaf := segments[len(segments)-1]
-		cmd := &cobra.Command{
-			Use:   leaf,
-			Short: operationShort(o),
-			Args:  cobra.NoArgs,
-			RunE:  makeOperationRunE(o, client, baseURL, logoData),
-		}
-		addSchemaFlags(cmd, o.Input)
-		cmd.Flags().StringP("output", "o", "pretty", "output format: json|table|raw|pretty")
-		cmd.Flags().BoolP("interactive", "i", false, "force interactive TUI form")
-		cmd.Flags().Bool("no-interactive", false, "never prompt; fail on missing input")
-		cmd.Flags().Bool("yes", false, "confirm an operation marked destructive")
-		cmd.Flags().Bool("accessible", false, "use plain accessible prompts")
-		cmd.Flags().String("input", "", "read JSON from a file or - for stdin")
-		cmd.Flags().Bool("generate-cli-skeleton", false, "print a JSON skeleton for the input schema and exit")
-		parent.AddCommand(cmd)
 	}
+}
+
+// newOperationCommand creates the runnable command of an operation.
+func newOperationCommand(o Operation, use string, client *webdaclient.Client, baseURL string, logoData []byte) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: operationShort(o),
+		Args:  cobra.NoArgs,
+		RunE:  makeOperationRunE(o, client, baseURL, logoData),
+	}
+	addSchemaFlags(cmd, o.Input)
+	cmd.Flags().StringP("output", "o", "pretty", "output format: json|table|raw|pretty")
+	cmd.Flags().BoolP("interactive", "i", false, "force interactive TUI form")
+	cmd.Flags().Bool("no-interactive", false, "never prompt; fail on missing input")
+	cmd.Flags().Bool("yes", false, "confirm an operation marked destructive")
+	cmd.Flags().Bool("accessible", false, "use plain accessible prompts")
+	cmd.Flags().String("input", "", "read JSON from a file or - for stdin")
+	cmd.Flags().Bool("generate-cli-skeleton", false, "print a JSON skeleton for the input schema and exit")
+	return cmd
 }
 
 // schemaFlagName keeps server field names from shadowing built-in flags.

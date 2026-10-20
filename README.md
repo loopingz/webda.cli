@@ -134,6 +134,7 @@ lc:
   client_id: webda-cli
   scope: "* offline_access"
 update: prompt
+model_groups: singular
 ```
 
 A profile is either a URL string or an object with `url` and optional `client_id`
@@ -230,6 +231,14 @@ The CLI fetches available operations from the remote host (`GET <operations URL>
 Model operations use both the singular and the plural (`MindNode.Get`, `MindNodes.Query`). When the
 listing has an `aliases` map (`{"MindNodes": "MindNode"}`, sent by Webda servers), they share one group
 reachable by both names, like `kubectl get pod`/`pods`: `myapp mind-node query` or `myapp mind-nodes get`.
+
+`model_groups` in `~/.webdacli/config.yaml` picks the name shell completion offers:
+
+| `model_groups` | Completed | Also accepted |
+|---|---|---|
+| `singular` (default) | `mind-node` | `mind-nodes` (alias) |
+| `plural` | `mind-nodes` | `mind-node` (alias) |
+| `both` | `mind-node`, `mind-nodes` | |
 
 Operations are invoked via `POST <operations URL>/<operationId>`, against the URL they
 were listed from (also when loaded from the cache). Operations from the OpenAPI
