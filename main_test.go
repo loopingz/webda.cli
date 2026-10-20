@@ -553,6 +553,7 @@ func TestParseOperationsResponse_WithServerInfo(t *testing.T) {
 		"operations": {"TestOp": {"id": "TestOp"}},
 		"version": "2.1.0",
 		"logo": "https://example.com/logo.png",
+		"aliases": {"MindNodes": "MindNode"},
 		"cli": {
 			"version_range": ">=1.2.0",
 			"download_url": "https://example.com/releases"
@@ -576,6 +577,9 @@ func TestParseOperationsResponse_WithServerInfo(t *testing.T) {
 	}
 	if info.CLIDownloadURL != "https://example.com/releases" {
 		t.Errorf("expected download URL, got %q", info.CLIDownloadURL)
+	}
+	if len(info.Aliases) != 1 || info.Aliases["MindNodes"] != "MindNode" {
+		t.Errorf("expected MindNodes alias, got %v", info.Aliases)
 	}
 }
 

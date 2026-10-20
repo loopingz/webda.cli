@@ -25,6 +25,26 @@ func TestConfig_LegacyStringsAndUpdate(t *testing.T) {
 	}
 }
 
+func TestConfig_ModelGroups(t *testing.T) {
+	var c Config
+	if err := yaml.Unmarshal([]byte("myapp: https://app.example.com\nmodel_groups: both\n"), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.ModelGroups != "both" {
+		t.Fatalf("model_groups = %q", c.ModelGroups)
+	}
+	if _, ok := c.Profiles["model_groups"]; ok {
+		t.Fatal("model_groups must not be a profile")
+	}
+	out, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "model_groups: both") {
+		t.Fatalf("marshaled config lost model_groups:\n%s", out)
+	}
+}
+
 func TestConfig_ObjectProfile(t *testing.T) {
 	var c Config
 	in := "lc:\n  url: https://my.loopingz.com\n  client_id: loopcenter-cli\n  scope: Task.* offline_access\n"

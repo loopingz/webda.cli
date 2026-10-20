@@ -130,7 +130,7 @@ func TestRenderOutput(t *testing.T) {
 func TestBuiltinFlagCollision(t *testing.T) {
 	op := Operation{Name: "Test.run", Input: map[string]any{"properties": map[string]any{"input": map[string]any{"type": "string"}, "output": map[string]any{"type": "string"}}}}
 	root := &cobra.Command{Use: "myapp"}
-	buildCommandTree(root, nil, "", []Operation{op}, nil)
+	buildCommandTree(root, nil, "", []Operation{op}, nil, "", nil)
 	cmd, _, err := root.Find([]string{"test", "run"})
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestForcedInteractiveWithoutSchemaFailsInScripts(t *testing.T) {
 func TestDestructiveOperationRequiresConfirmation(t *testing.T) {
 	for _, op := range []Operation{{Name: "Test.delete", Destructive: true}, {Name: "Test.delete", Raw: map[string]any{"destructive": true}}} {
 		root := &cobra.Command{Use: "myapp"}
-		buildCommandTree(root, nil, "", []Operation{op}, nil)
+		buildCommandTree(root, nil, "", []Operation{op}, nil, "", nil)
 		cmd, _, err := root.Find([]string{"test", "delete"})
 		if err != nil {
 			t.Fatal(err)

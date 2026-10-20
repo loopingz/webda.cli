@@ -58,6 +58,8 @@ type ServerInfo struct {
 	OperationsVersion string
 	CLIVersionRange   string
 	CLIDownloadURL    string
+	// Aliases maps a model plural to its singular in operation names ("MindNodes" → "MindNode").
+	Aliases map[string]string
 }
 
 // operationsResponse attempts to map possible shapes.
@@ -181,6 +183,14 @@ func parseOperationsResponse(body []byte) ([]Operation, ServerInfo, error) {
 	if err := json.Unmarshal(body, &gen); err == nil {
 		info.LogoURL, _ = gen["logo"].(string)
 		info.OperationsVersion, _ = gen["version"].(string)
+		if aliases, ok := gen["aliases"].(map[string]any); ok {
+			info.Aliases = make(map[string]string, len(aliases))
+			for plural, singular := range aliases {
+				if singular, ok := singular.(string); ok {
+					info.Aliases[plural] = singular
+				}
+			}
+		}
 		if cli, ok := gen["cli"].(map[string]any); ok {
 			info.CLIVersionRange, _ = cli["version_range"].(string)
 			info.CLIDownloadURL, _ = cli["download_url"].(string)
@@ -387,7 +397,7 @@ func runCLI() error {
 	})
 	root.AddCommand(newVersionCmd(baseURL, &serverInfo))
 	if localInvocation(args) {
-		buildCommandTree(root, nil, baseURL, ops, logoData)
+		buildCommandTree(root, nil, baseURL, ops, serverInfo.Aliases, cfg.ModelGroups, logoData)
 		addExplorer(root, profile, baseURL, ops)
 		root.AddCommand(stubCommand(newAuthCmd(authEnv{}, profile, prof)), stubCommand(newLogoutCmd(authEnv{}, profile, prof)), &cobra.Command{Use: "whoami", Short: "Show current user"}, &cobra.Command{Use: "update", Short: "Update CLI"}, &cobra.Command{Use: "refresh-operations", Short: "Refresh cached operation definitions"})
 		return root.Execute()
@@ -437,7 +447,7 @@ func runCLI() error {
 			logoData = data
 		}
 	}
-	buildCommandTree(root, cli, baseURL, ops, logoData)
+	buildCommandTree(root, cli, baseURL, ops, serverInfo.Aliases, cfg.ModelGroups, logoData)
 	root.AddCommand(&cobra.Command{Use: "whoami", Short: "Show current user info", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		timeout, _ := cmd.Flags().GetDuration("timeout")
 		ctx, cancel := context.WithTimeout(cmd.Context(), timeout)

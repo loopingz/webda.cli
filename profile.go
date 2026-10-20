@@ -12,6 +12,7 @@ const (
 	defaultClientID = "webda-cli"
 	defaultScope    = "* offline_access"
 	updateKey       = "update"
+	modelGroupsKey  = "model_groups"
 )
 
 // Profile is one server the CLI talks to.
@@ -41,6 +42,8 @@ func (p Profile) EffectiveScope() string {
 type Config struct {
 	Profiles map[string]Profile
 	Update   string
+	// ModelGroups names the command groups of a model: singular (default), plural or both.
+	ModelGroups string
 }
 
 // UnmarshalYAML accepts the legacy `name: url` form and the `name: {url, client_id, scope}` form.
@@ -53,6 +56,10 @@ func (c *Config) UnmarshalYAML(n *yaml.Node) error {
 		key, val := n.Content[i].Value, n.Content[i+1]
 		if key == updateKey {
 			c.Update = val.Value
+			continue
+		}
+		if key == modelGroupsKey {
+			c.ModelGroups = val.Value
 			continue
 		}
 		switch val.Kind {
@@ -83,6 +90,9 @@ func (c Config) MarshalYAML() (any, error) {
 	}
 	if c.Update != "" {
 		out[updateKey] = c.Update
+	}
+	if c.ModelGroups != "" {
+		out[modelGroupsKey] = c.ModelGroups
 	}
 	return out, nil
 }
