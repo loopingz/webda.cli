@@ -54,18 +54,25 @@ func splitOperationName(name string) []string {
 
 // buildCommandTree creates nested cobra commands from operations.
 // Operations are split by "." into command groups. Only leaf commands are runnable.
+// aliases maps a model plural to its singular, as listed by the server ("MindNodes" → "MindNode"): the plural
+// operations ("MindNodes.Query") join the singular group, reachable by both names like kubectl's pod/pods.
 // logoData is passed through to operation execution for TUI display.
-func buildCommandTree(root *cobra.Command, client *webdaclient.Client, baseURL string, ops []Operation, logoData []byte) {
+func buildCommandTree(root *cobra.Command, client *webdaclient.Client, baseURL string, ops []Operation, aliases map[string]string, logoData []byte) {
 	for i := range ops {
 		o := ops[i]
 		segments := splitOperationName(o.Name)
+		var alias string
+		if plural, _, ok := strings.Cut(o.Name, "."); ok && aliases[plural] != "" {
+			alias = segments[0]
+			segments[0] = camelToKebab(aliases[plural])
+		}
 		parent := root
 		// Create or find intermediate group commands
 		for i := 0; i < len(segments)-1; i++ {
 			seg := segments[i]
 			var found *cobra.Command
 			for _, c := range parent.Commands() {
-				if c.Use == seg {
+				if c.Use == seg || c.HasAlias(seg) {
 					found = c
 					break
 				}
@@ -73,6 +80,9 @@ func buildCommandTree(root *cobra.Command, client *webdaclient.Client, baseURL s
 			if found == nil {
 				found = &cobra.Command{Use: seg, Short: fmt.Sprintf("%s commands", seg)}
 				parent.AddCommand(found)
+			}
+			if i == 0 && alias != "" && alias != seg && !found.HasAlias(alias) {
+				found.Aliases = append(found.Aliases, alias)
 			}
 			parent = found
 		}

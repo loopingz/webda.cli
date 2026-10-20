@@ -227,6 +227,10 @@ The CLI fetches available operations from the remote host (`GET <operations URL>
 | `MFA.SMS` | `myapp mfa sms` |
 | `Sync.AWS` | `myapp sync aws` |
 
+Model operations use both the singular and the plural (`MindNode.Get`, `MindNodes.Query`). When the
+listing has an `aliases` map (`{"MindNodes": "MindNode"}`, sent by Webda servers), they share one group
+reachable by both names, like `kubectl get pod`/`pods`: `myapp mind-node query` or `myapp mind-nodes get`.
+
 Operations are invoked via `POST <operations URL>/<operationId>`, against the URL they
 were listed from (also when loaded from the cache). Operations from the OpenAPI
 document use their own method and path.

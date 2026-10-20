@@ -86,7 +86,7 @@ func TestBuildCommandTree(t *testing.T) {
 		{Name: "Deploy"},
 	}
 	root := &cobra.Command{Use: "test"}
-	buildCommandTree(root, nil, "", ops, nil)
+	buildCommandTree(root, nil, "", ops, nil, nil)
 
 	// Check top-level groups exist
 	authCmd, _, err := root.Find([]string{"authorizer-service"})
@@ -132,6 +132,66 @@ func TestBuildCommandTree(t *testing.T) {
 	}
 	if testOpsCmd.Flags().Lookup("input") == nil {
 		t.Fatal("expected --input flag")
+	}
+}
+
+func TestBuildCommandTreeMergesPluralGroups(t *testing.T) {
+	ops := []Operation{
+		// Plural first to check the merge does not depend on ordering
+		{Name: "MindNodes.Query"},
+		{Name: "MindNode.Get"},
+		{Name: "People.Query"},
+		{Name: "Person.Get"},
+		{Name: "Statuses.Query"},
+	}
+	aliases := map[string]string{"MindNodes": "MindNode", "People": "Person", "Statuses": "Status"}
+	root := &cobra.Command{Use: "test"}
+	buildCommandTree(root, nil, "", ops, aliases, nil)
+
+	tests := []struct {
+		singular, plural string
+		ops              []string
+	}{
+		{"mind-node", "mind-nodes", []string{"get", "query"}},
+		{"person", "people", []string{"get", "query"}},
+		// Only the plural operation is listed: it still lives under the singular group
+		{"status", "statuses", []string{"query"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.singular, func(t *testing.T) {
+			for _, group := range []string{tt.singular, tt.plural} {
+				for _, op := range tt.ops {
+					cmd, _, err := root.Find([]string{group, op})
+					if err != nil || cmd == nil || cmd.Use != op {
+						t.Fatalf("expected %s %s command, got err=%v cmd=%v", group, op, err, cmd)
+					}
+				}
+			}
+			group, _, _ := root.Find([]string{tt.plural})
+			if group.Use != tt.singular {
+				t.Errorf("group Use = %q, want %q", group.Use, tt.singular)
+			}
+			if len(group.Aliases) != 1 || group.Aliases[0] != tt.plural {
+				t.Errorf("expected %q aliases [%q], got %v", group.Use, tt.plural, group.Aliases)
+			}
+		})
+	}
+	if n := len(root.Commands()); n != 3 {
+		t.Errorf("expected 3 top-level groups, got %d", n)
+	}
+}
+
+func TestBuildCommandTreeWithoutAliases(t *testing.T) {
+	ops := []Operation{{Name: "MindNodes.Query"}, {Name: "MindNode.Get"}, {Name: "Deploys"}}
+	root := &cobra.Command{Use: "test"}
+	buildCommandTree(root, nil, "", ops, map[string]string{"Deploys": "Deploy"}, nil)
+	// Servers that do not list aliases keep one group per operation prefix
+	if n := len(root.Commands()); n != 3 {
+		t.Errorf("expected 3 top-level commands, got %d", n)
+	}
+	// A single-segment operation is not a group: it keeps its name
+	if cmd, _, err := root.Find([]string{"deploys"}); err != nil || cmd.Use != "deploys" || cmd.RunE == nil {
+		t.Fatalf("expected deploys leaf command, got err=%v", err)
 	}
 }
 
