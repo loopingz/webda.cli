@@ -393,7 +393,7 @@ func runCLI() error {
 		if terminalOutput(cmd.OutOrStdout()) {
 			tui.RenderLogo(cmd.OutOrStdout(), logoData)
 		}
-		originalHelp(cmd, args)
+		showAliasHelp(root, func() { originalHelp(cmd, args) })
 	})
 	root.AddCommand(newVersionCmd(baseURL, &serverInfo))
 	if localInvocation(args) {
