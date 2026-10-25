@@ -158,6 +158,24 @@ Help, version, setup, profiles, completion, and cached input skeletons work with
 signing in or contacting the server. Operation help uses the last cached schema;
 run `refresh-operations` to update it.
 
+For Bash and Zsh, help recognizes literal aliases in the standard shell startup
+files (including `.bash_aliases` and Zsh's `ZDOTDIR`):
+
+```bash
+alias myalias='webda.cli --profile staging'
+myalias --help
+myalias mind-node get --help
+```
+
+Usage displays `myalias` in place of the binary and the global options supplied
+by the alias. The selected profile and command execution stay the same. Detection
+matches the command and its leading arguments, preferring the most specific alias.
+Shells do not pass the original alias name to programs, so a direct invocation
+with those same arguments also displays the matching alias. Ambiguous matches,
+session-only aliases, sourced custom files, expansions, and aliases containing
+subcommands fall back to the binary name. Startup files are read without executing
+shell code.
+
 ## Authentication
 
 Sign-in uses OAuth 2.0 with PKCE. On first use, or with `myapp auth`, the CLI opens
