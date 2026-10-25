@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/loopingz/webda.cli/compare/v1.4.0...v1.4.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* display matching shell aliases in help ([#20](https://github.com/loopingz/webda.cli/issues/20)) ([8a1887a](https://github.com/loopingz/webda.cli/commit/8a1887ae581ee57645499dc0808a68feb8781d59))
+
 ## [1.4.0](https://github.com/loopingz/webda.cli/compare/v1.3.0...v1.4.0) (2026-10-20)
 
 
