@@ -20,11 +20,12 @@ func splitJQ(text string, delimiter byte) []string {
 	for i := 0; i < len(text); i++ {
 		c := text[i]
 		if quoted {
-			if escaped {
+			switch {
+			case escaped:
 				escaped = false
-			} else if c == '\\' {
+			case c == '\\':
 				escaped = true
-			} else if c == '"' {
+			case c == '"':
 				quoted = false
 			}
 			continue
