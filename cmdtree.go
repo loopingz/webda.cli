@@ -137,6 +137,10 @@ func newOperationCommand(o Operation, use string, client *webdaclient.Client, ba
 	}
 	addSchemaFlags(cmd, o.Input)
 	cmd.Flags().StringP("output", "o", "pretty", "output format: json|table|raw|pretty")
+	cmd.Flags().StringP("query", "q", "", "jq query applied to the response before formatting")
+	_ = cmd.RegisterFlagCompletionFunc("query", func(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
+		return completeQuery(o.Output, prefix), cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveNoSpace
+	})
 	cmd.Flags().BoolP("interactive", "i", false, "force interactive TUI form")
 	cmd.Flags().Bool("no-interactive", false, "never prompt; fail on missing input")
 	cmd.Flags().Bool("yes", false, "confirm an operation marked destructive")
@@ -150,7 +154,7 @@ func newOperationCommand(o Operation, use string, client *webdaclient.Client, ba
 func schemaFlagName(name string) string {
 	flag := camelToKebab(name)
 	switch flag {
-	case "input", "output", "interactive", "no-interactive", "accessible", "yes", "generate-cli-skeleton", "profile", "timeout", "help":
+	case "input", "output", "query", "interactive", "no-interactive", "accessible", "yes", "generate-cli-skeleton", "profile", "timeout", "help":
 		return "field-" + flag
 	}
 	return flag
@@ -255,6 +259,11 @@ func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string,
 			return err
 		}
 
+		queryText, _ := cmd.Flags().GetString("query")
+		query, err := compileQuery(queryText, cmd.Flags().Changed("query"))
+		if err != nil {
+			return err
+		}
 		body, err := collectInput(cmd, op, logoData)
 		if err != nil {
 			return err
@@ -288,7 +297,7 @@ func makeOperationRunE(op Operation, client *webdaclient.Client, baseURL string,
 		if err != nil {
 			return err
 		}
-		rendered, err := renderOutput(rb, format)
+		rendered, err := renderQuery(ctx, rb, format, query)
 		if err != nil {
 			return err
 		}

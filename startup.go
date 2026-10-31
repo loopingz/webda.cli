@@ -163,7 +163,7 @@ func addLocalCommands(root *cobra.Command, invoked string, cfg Config) {
 		completion.AddCommand(&cobra.Command{Use: shell, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 			switch shell {
 			case "bash":
-				return root.GenBashCompletionV2(cmd.OutOrStdout(), true)
+				return generateBashCompletion(root, cmd.OutOrStdout())
 			case "zsh":
 				return root.GenZshCompletion(cmd.OutOrStdout())
 			case "fish":

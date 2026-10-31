@@ -139,6 +139,10 @@ func renderTable(data []byte) ([]byte, error) {
 	if err := json.Unmarshal(data, &value); err != nil {
 		return nil, fmt.Errorf("table output requires JSON: %w", err)
 	}
+	return renderTableValue(value)
+}
+
+func renderTableValue(value any) ([]byte, error) {
 	var out bytes.Buffer
 	w := tabwriter.NewWriter(&out, 0, 4, 2, ' ', 0)
 	switch v := value.(type) {
