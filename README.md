@@ -310,6 +310,63 @@ requests and operation discovery.
 Array and object flags accept JSON. Schema fields that conflict with built-in
 flags use a `field-` prefix, for example `--field-input` or `--field-output`.
 
+### Query response fields
+
+Keep `--output` / `-o` for the format; use `--query` / `-q` for jq selection,
+filtering, and projection before rendering. No external jq binary is required.
+
+```bash
+myapp users list -o json -q '.items[0].email'
+myapp users list -o raw -q '.items[].name'
+myapp users list -o table -q '.items[] | {name, email, team: .team.name}'
+myapp users list -o table -q '.items[] | select(.team.name == "Engineering") | {name, email}'
+```
+
+Queries use [gojq v0.12.17](https://github.com/itchyny/gojq/tree/v0.12.17), a Go
+implementation of jq with some differences from jq (including sorted object keys).
+Modules, extra input streams, and host environment variables are unavailable.
+Invalid queries fail before the operation runs; evaluation errors fail after the
+response arrives, with no partial stdout. The operation timeout also bounds query
+evaluation; Ctrl-C cancels it. Results are buffered in memory.
+
+Each query result is printed separately: `json` and `pretty` emit a sequence of
+indented JSON values, while `raw` emits strings without JSON quotes and other
+values as compact JSON, with a newline after each value. Multiple results are a
+JSON stream, not one JSON document; use `[.items[].name]` to collect an array.
+No results produce no output; null is printed as `null`.
+
+With `-o table`, object results become rows and array results contribute their
+objects as rows. Columns are the alphabetically sorted union of object keys,
+including aliases such as `team` above. Missing cells are blank; nested values
+are JSON. Scalars, nulls, or arrays containing non-objects produce an error.
+Empty result streams and empty arrays print nothing. Without `--query`, existing
+output behavior is unchanged.
+
+Tab completion uses the operation's cached output schema, without signing in,
+contacting the server, or running the operation. It supports nested properties,
+`[]`, numeric indices, simple path pipes, and object projection keys/value paths.
+Available local schema references and union branches are followed. Missing or
+unknown schemas yield no suggestions. Complex transformations (including `map`,
+`select`, variables, and custom functions) still evaluate normally, but completion
+after them is not inferred.
+
+In bash, zsh, and fish, put the query in single quotes to protect jq punctuation.
+Press Tab **inside** those quotes, at the end of the query being edited:
+
+```text
+-q '.items[].em<TAB>                         suggests email
+-q '.items[] | .team.na<TAB>                 suggests name
+-q '.items[] | {name, email: .em<TAB>         suggests email
+-q '.items[].team["postal-<TAB>              suggests ["postal-code"]
+```
+
+`<TAB>` means a key press, not literal text; close the outer quote before running
+the command. Use bracket-quoted paths for special keys, e.g. `.["a.b"]`.
+Completion in the middle of an expression is best effort; move the cursor to the
+end of the query for reliable suggestions. Regenerate/reinstall shell completion
+with `myapp completion install` after upgrading, especially for bash projection
+completion (which needs updated handling of colons).
+
 ### JSON Skeleton and File Input
 
 Generate a JSON skeleton for an operation's input schema, fill it in, then pass it back:

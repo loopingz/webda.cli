@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/charmbracelet/huh v1.0.0
 	github.com/creack/pty v1.1.24
+	github.com/itchyny/gojq v0.12.17
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/spf13/cobra v1.9.1
@@ -14,6 +15,7 @@ require (
 )
 
 require (
+	github.com/itchyny/timefmt-go v0.1.6 // indirect
 	github.com/sahilm/fuzzy v0.1.1 // indirect
 	golang.org/x/term v0.42.0 // indirect
 	rsc.io/qr v0.2.0 // indirect

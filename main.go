@@ -586,7 +586,7 @@ func installBashCompletion(root *cobra.Command, name string) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	if err := root.GenBashCompletionV2(f, true); err != nil {
+	if err := generateBashCompletion(root, f); err != nil {
 		return err
 	}
 
