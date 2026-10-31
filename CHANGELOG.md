@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/loopingz/webda.cli/compare/v1.4.1...v1.5.0) (2026-10-31)
+
+
+### Features
+
+* add jq queries with schema-aware completion ([#23](https://github.com/loopingz/webda.cli/issues/23)) ([77998d7](https://github.com/loopingz/webda.cli/commit/77998d75c036d7e01bc24186b60833107d7aa683))
+
 ## [1.4.1](https://github.com/loopingz/webda.cli/compare/v1.4.0...v1.4.1) (2026-10-25)
 
 
