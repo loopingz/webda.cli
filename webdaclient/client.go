@@ -124,7 +124,11 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if sent != "" {
 		first.Header.Set("Authorization", "Bearer "+sent)
 	}
+	unlock := c.attachUnlock(first)
 	resp, err := c.hc.Do(first)
+	if err == nil && resp.StatusCode == http.StatusLocked && unlock != "" {
+		c.unlockEnded(unlock)
+	}
 	if err != nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
 	}
@@ -154,7 +158,62 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if fresh != "" {
 		retry.Header.Set("Authorization", "Bearer "+fresh)
 	}
+	c.attachUnlock(retry)
 	return c.hc.Do(retry)
+}
+
+// attachUnlock adds the stored device unlock header to req unless the caller set that header itself; it returns the
+// value sent ("" when none).
+func (c *Client) attachUnlock(req *http.Request) string {
+	c.mu.Lock()
+	header, key := c.token.UnlockHeader, c.token.UnlockKey
+	c.mu.Unlock()
+	if header == "" || key == "" || req.Header.Get(header) != "" {
+		return ""
+	}
+	req.Header.Set(header, key)
+	return key
+}
+
+// unlockEnded drops a device unlock the server answered 423 to (its session ended: locked, expired or revoked).
+func (c *Client) unlockEnded(sent string) {
+	c.mu.Lock()
+	if c.token.UnlockKey != sent {
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+	if err := c.SetUnlock("", ""); err == nil {
+		_, _ = fmt.Fprintln(c.stderr, "The vault unlock of this profile has ended; run unlock to unlock it again.")
+	}
+}
+
+// Unlocked reports whether a device unlock is stored for the profile.
+func (c *Client) Unlocked() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token.UnlockKey != ""
+}
+
+// SetUnlock stores (or, with empty values, clears) the device unlock sent on every request, with the tokens.
+func (c *Client) SetUnlock(header, key string) error {
+	c.mu.Lock()
+	c.token.UnlockHeader, c.token.UnlockKey = header, key
+	ti := c.token
+	c.mu.Unlock()
+	if c.LockFile != "" {
+		release, err := filelock.Lock(context.Background(), c.LockFile)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
+	// keep tokens another process rotated meanwhile
+	if stored, err := c.store.Load(c.Name); err == nil && stored.IssuedFor(c.origin) && stored.RefreshToken != "" {
+		stored.UnlockHeader, stored.UnlockKey = header, key
+		ti = stored
+	}
+	return c.store.Save(c.Name, ti)
 }
 
 // expiring reports whether the access token is missing or expires within refreshSkew; zero ExpiresAt is unknown (never expiring).
@@ -288,6 +347,8 @@ func (c *Client) exchange(ctx context.Context, previous tokenstore.TokenInfo, fa
 	if ti.Scope == "" {
 		ti.Scope = previous.Scope
 	}
+	// a device unlock is bound to the refresh token family, which rotation keeps
+	ti.UnlockHeader, ti.UnlockKey = previous.UnlockHeader, previous.UnlockKey
 	if err := c.store.Save(c.Name, ti); err != nil {
 		// keep going with the new tokens in memory, but never leave the rotated-out refresh token stored
 		_, _ = fmt.Fprintf(c.stderr, "Warning: could not save the refreshed sign-in (%v); you will need to run auth next time.\n", err)

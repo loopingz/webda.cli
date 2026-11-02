@@ -375,3 +375,48 @@ func TestLegacyTokenIsNeverUsed(t *testing.T) {
 		t.Fatalf("legacy refresh token sent to the token endpoint (%d calls)", n)
 	}
 }
+
+func TestRefreshKeepsTheDeviceUnlockAndSendsIt(t *testing.T) {
+	f := newFixture(t, "")
+	var unlock []string
+	f.s.Handle("/api/u", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		unlock = append(unlock, r.Header.Get("X-Example-Key"))
+		_, _ = fmt.Fprintln(w, `{}`)
+	}))
+	f.save(t, tokenstore.TokenInfo{AccessToken: "old", RefreshToken: "r0", ExpiresAt: time.Now(), UnlockHeader: "X-Example-Key", UnlockKey: "s.k"})
+	c := f.client(t)
+	if _, err := f.get(t, c); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := f.store.Load("p")
+	if stored.RefreshToken != "r1" || stored.UnlockHeader != "X-Example-Key" || stored.UnlockKey != "s.k" {
+		t.Fatalf("refresh lost the unlock: %+v", stored)
+	}
+	req, _ := http.NewRequest(http.MethodGet, f.s.URL+"/api/u", nil)
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	// a request setting the header itself keeps its value; another origin never gets it
+	req, _ = http.NewRequest(http.MethodGet, f.s.URL+"/api/u", nil)
+	req.Header.Set("X-Example-Key", "mine")
+	if resp, err = c.Do(req); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(unlock) != 2 || unlock[0] != "s.k" || unlock[1] != "mine" {
+		t.Fatalf("unlock headers %v", unlock)
+	}
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Example-Key") != "" {
+			t.Error("unlock sent to another origin")
+		}
+	}))
+	defer other.Close()
+	req, _ = http.NewRequest(http.MethodGet, other.URL, nil)
+	if resp, err = c.Do(req); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+}
