@@ -18,6 +18,8 @@ type TokenInfo struct {
 	// UnlockKey (`<session id>.<key>`) on every request to the server. The key is kept with the tokens only.
 	UnlockHeader string `json:"unlock_header,omitempty"`
 	UnlockKey    string `json:"unlock_key,omitempty"`
+	// UnlockPresence: the unlock is only sent after the person confirmed their presence (Touch ID or password).
+	UnlockPresence bool `json:"unlock_presence,omitempty"`
 	// Sequence is only read to detect tokens of the legacy /auth/cli sign-in; never written.
 	Sequence string `json:"sequence,omitempty"`
 }

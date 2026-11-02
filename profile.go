@@ -20,6 +20,10 @@ type Profile struct {
 	URL      string `yaml:"url"`
 	ClientID string `yaml:"client_id,omitempty"`
 	Scope    string `yaml:"scope,omitempty"`
+	// UnlockPresence makes `unlock` require Touch ID or the account password before each use of the unlock.
+	UnlockPresence bool `yaml:"unlock_presence,omitempty"`
+	// LockOnScreenLock makes `unlock` and `mcp` lock the unlock when the screen locks.
+	LockOnScreenLock bool `yaml:"lock_on_screen_lock,omitempty"`
 }
 
 // EffectiveClientID returns the OAuth client id, webda-cli by default.
@@ -82,7 +86,7 @@ func (c *Config) UnmarshalYAML(n *yaml.Node) error {
 func (c Config) MarshalYAML() (any, error) {
 	out := map[string]any{}
 	for name, p := range c.Profiles {
-		if p.ClientID == "" && p.Scope == "" {
+		if p.ClientID == "" && p.Scope == "" && !p.UnlockPresence && !p.LockOnScreenLock {
 			out[name] = p.URL
 		} else {
 			out[name] = p

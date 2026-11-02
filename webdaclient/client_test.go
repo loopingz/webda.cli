@@ -420,3 +420,52 @@ func TestRefreshKeepsTheDeviceUnlockAndSendsIt(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 }
+
+func TestPresenceWithholdsTheUnlockUntilNeeded(t *testing.T) {
+	f := newFixture(t, "")
+	var seen []string
+	f.s.Handle("/api/v", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("X-Example-Key")
+		seen = append(seen, key)
+		if key == "" {
+			w.WriteHeader(http.StatusLocked)
+			return
+		}
+		_, _ = fmt.Fprintln(w, `{}`)
+	}))
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0", ExpiresAt: time.Now().Add(time.Hour), UnlockHeader: "X-Example-Key", UnlockKey: "s.k", UnlockPresence: true})
+	c := f.client(t)
+	checks := 0
+	allow := false
+	c.PresenceCheck = func() error {
+		checks++
+		if !allow {
+			return errors.New("canceled by the user")
+		}
+		return nil
+	}
+	do := func() int {
+		req, _ := http.NewRequest(http.MethodPost, f.s.URL+"/api/v", strings.NewReader(`{"x":1}`))
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	// refused: the 423 comes back, the key was never sent, the unlock is kept
+	if code := do(); code != http.StatusLocked || checks != 1 || !c.Unlocked() {
+		t.Fatalf("code %d checks %d", code, checks)
+	}
+	allow = true
+	if code := do(); code != http.StatusOK || checks != 2 {
+		t.Fatalf("code %d checks %d", code, checks)
+	}
+	// confirmed once per process: sent directly afterwards
+	if code := do(); code != http.StatusOK || checks != 2 {
+		t.Fatalf("code %d checks %d", code, checks)
+	}
+	if strings.Join(seen, ",") != ",,s.k,s.k" {
+		t.Fatalf("keys sent %v", seen)
+	}
+}

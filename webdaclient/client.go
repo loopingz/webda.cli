@@ -41,6 +41,8 @@ type Client struct {
 	// LockFile, when set, is an advisory lock file held around load→refresh→save so concurrent CLI
 	// processes sharing the token store never spend the same rotating refresh token twice.
 	LockFile string
+	// PresenceCheck confirms the person is there before an unlock stored with UnlockPresence is sent; nil refuses.
+	PresenceCheck func() error
 
 	store    tokenstore.TokenStore
 	meta     *oauth.Metadata
@@ -52,6 +54,8 @@ type Client struct {
 	mu       sync.Mutex
 	token    tokenstore.TokenInfo
 	inflight *call
+	// present: the presence check passed in this process (asked once)
+	present bool
 }
 
 // New loads the stored token; refreshing uses the metadata's token endpoint and clientID.
@@ -124,10 +128,15 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if sent != "" {
 		first.Header.Set("Authorization", "Bearer "+sent)
 	}
-	unlock := c.attachUnlock(first)
+	unlock := c.attachUnlock(first, false)
 	resp, err := c.hc.Do(first)
-	if err == nil && resp.StatusCode == http.StatusLocked && unlock != "" {
-		c.unlockEnded(unlock)
+	if err == nil && resp.StatusCode == http.StatusLocked {
+		if unlock != "" {
+			c.unlockEnded(unlock)
+		} else if c.withheld(first) {
+			// the server needs the unlock this process withheld until the person confirms their presence
+			return c.retryWithPresence(req, resp, sent)
+		}
 	}
 	if err != nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
@@ -158,17 +167,77 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if fresh != "" {
 		retry.Header.Set("Authorization", "Bearer "+fresh)
 	}
-	c.attachUnlock(retry)
+	c.attachUnlock(retry, false)
 	return c.hc.Do(retry)
 }
 
-// attachUnlock adds the stored device unlock header to req unless the caller set that header itself; it returns the
-// value sent ("" when none).
-func (c *Client) attachUnlock(req *http.Request) string {
+// withheld reports whether req went without a stored unlock because it waits for a presence check.
+func (c *Client) withheld(req *http.Request) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token.UnlockKey != "" && c.token.UnlockPresence && !c.present && req.Header.Get(c.token.UnlockHeader) == ""
+}
+
+// retryWithPresence asks for the presence check once per process, then replays req with the unlock. A refused check
+// or a body that cannot be replayed returns the 423 as it came.
+func (c *Client) retryWithPresence(req *http.Request, resp *http.Response, bearer string) (*http.Response, error) {
+	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
+		return resp, nil
+	}
+	if err := c.confirmPresence(); err != nil {
+		_, _ = fmt.Fprintf(c.stderr, "The vault unlock was not used: %v\n", err)
+		return resp, nil
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	_ = resp.Body.Close()
+	retry := req.Clone(req.Context())
+	if req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		retry.Body = body
+	}
+	if bearer != "" {
+		retry.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	unlock := c.attachUnlock(retry, true)
+	again, err := c.hc.Do(retry)
+	if err == nil && again.StatusCode == http.StatusLocked && unlock != "" {
+		c.unlockEnded(unlock)
+	}
+	return again, err
+}
+
+// confirmPresence runs PresenceCheck once per process.
+func (c *Client) confirmPresence() error {
+	c.mu.Lock()
+	if c.present {
+		c.mu.Unlock()
+		return nil
+	}
+	check := c.PresenceCheck
+	c.mu.Unlock()
+	if check == nil {
+		return errors.New("this unlock requires a presence check, which is not available here")
+	}
+	if err := check(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.present = true
+	c.mu.Unlock()
+	return nil
+}
+
+// attachUnlock adds the stored device unlock header to req unless the caller set that header itself, or the unlock
+// waits for a presence check not yet passed (force: it just passed); it returns the value sent ("" when none).
+func (c *Client) attachUnlock(req *http.Request, force bool) string {
 	c.mu.Lock()
 	header, key := c.token.UnlockHeader, c.token.UnlockKey
+	withheld := c.token.UnlockPresence && !c.present && !force
 	c.mu.Unlock()
-	if header == "" || key == "" || req.Header.Get(header) != "" {
+	if header == "" || key == "" || withheld || req.Header.Get(header) != "" {
 		return ""
 	}
 	req.Header.Set(header, key)
@@ -183,7 +252,7 @@ func (c *Client) unlockEnded(sent string) {
 		return
 	}
 	c.mu.Unlock()
-	if err := c.SetUnlock("", ""); err == nil {
+	if err := c.SetUnlock("", "", false); err == nil {
 		_, _ = fmt.Fprintln(c.stderr, "The vault unlock of this profile has ended; run unlock to unlock it again.")
 	}
 }
@@ -195,10 +264,32 @@ func (c *Client) Unlocked() bool {
 	return c.token.UnlockKey != ""
 }
 
-// SetUnlock stores (or, with empty values, clears) the device unlock sent on every request, with the tokens.
-func (c *Client) SetUnlock(header, key string) error {
+// UnlockKey returns the stored device unlock value ("" when none).
+func (c *Client) UnlockKey() string {
 	c.mu.Lock()
-	c.token.UnlockHeader, c.token.UnlockKey = header, key
+	defer c.mu.Unlock()
+	return c.token.UnlockKey
+}
+
+// ReloadUnlock adopts the device unlock another process stored (or cleared) for the profile.
+func (c *Client) ReloadUnlock() {
+	stored, err := c.store.Load(c.Name)
+	if err != nil || !stored.IssuedFor(c.origin) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if stored.UnlockKey != c.token.UnlockKey {
+		c.present = false
+	}
+	c.token.UnlockHeader, c.token.UnlockKey, c.token.UnlockPresence = stored.UnlockHeader, stored.UnlockKey, stored.UnlockPresence
+}
+
+// SetUnlock stores (or, with empty values, clears) the device unlock sent on every request, with the tokens;
+// presence withholds it until the person confirms they are there.
+func (c *Client) SetUnlock(header, key string, presence bool) error {
+	c.mu.Lock()
+	c.token.UnlockHeader, c.token.UnlockKey, c.token.UnlockPresence = header, key, presence && key != ""
 	ti := c.token
 	c.mu.Unlock()
 	if c.LockFile != "" {
@@ -210,7 +301,7 @@ func (c *Client) SetUnlock(header, key string) error {
 	}
 	// keep tokens another process rotated meanwhile
 	if stored, err := c.store.Load(c.Name); err == nil && stored.IssuedFor(c.origin) && stored.RefreshToken != "" {
-		stored.UnlockHeader, stored.UnlockKey = header, key
+		stored.UnlockHeader, stored.UnlockKey, stored.UnlockPresence = header, key, ti.UnlockPresence
 		ti = stored
 	}
 	return c.store.Save(c.Name, ti)
@@ -348,7 +439,7 @@ func (c *Client) exchange(ctx context.Context, previous tokenstore.TokenInfo, fa
 		ti.Scope = previous.Scope
 	}
 	// a device unlock is bound to the refresh token family, which rotation keeps
-	ti.UnlockHeader, ti.UnlockKey = previous.UnlockHeader, previous.UnlockKey
+	ti.UnlockHeader, ti.UnlockKey, ti.UnlockPresence = previous.UnlockHeader, previous.UnlockKey, previous.UnlockPresence
 	if err := c.store.Save(c.Name, ti); err != nil {
 		// keep going with the new tokens in memory, but never leave the rotated-out refresh token stored
 		_, _ = fmt.Fprintf(c.stderr, "Warning: could not save the refreshed sign-in (%v); you will need to run auth next time.\n", err)

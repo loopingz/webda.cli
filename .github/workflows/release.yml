@@ -22,7 +22,7 @@ jobs:
           release-type: go
 
   build-release:
-    name: Build Release
+    name: Build Release (linux, windows)
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
     runs-on: ubuntu-latest
@@ -41,21 +41,68 @@ jobs:
           COMMIT="$(git rev-parse --short HEAD)"
           DATE="$(date -u +%Y-%m-%d)"
           LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${DATE}"
-          for GOOS in linux darwin windows; do
+          for GOOS in linux windows; do
             for GOARCH in amd64 arm64; do
               ext=""
               if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
               GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="${LDFLAGS}" -o "webda-cli-${GOOS}-${GOARCH}${ext}" .
             done
           done
-      - name: Generate checksums
-        run: sha256sum webda-cli-* install.sh install.ps1 > checksums.txt
       - name: Upload release assets
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
           files: |
             webda-cli-*
-            checksums.txt
             install.sh
             install.ps1
+
+  # darwin builds use cgo (Touch ID through LocalAuthentication for `unlock --require-presence`): built on macOS
+  build-darwin:
+    name: Build Release (darwin, cgo)
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - name: Build binaries
+        run: |
+          TAG="${{ needs.release-please.outputs.tag_name }}"
+          VERSION="${TAG#v}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%d)"
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${DATE}"
+          for GOARCH in amd64 arm64; do
+            CGO_ENABLED=1 GOOS=darwin GOARCH=$GOARCH go build -ldflags="${LDFLAGS}" -o "webda-cli-darwin-${GOARCH}" .
+            # the Touch ID bridge must be linked in, or --require-presence would be refused at run time
+            otool -L "webda-cli-darwin-${GOARCH}" | grep -q LocalAuthentication
+          done
+      - name: Upload release assets
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: webda-cli-darwin-*
+
+  checksums:
+    name: Checksums
+    needs: [release-please, build-release, build-darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ needs.release-please.outputs.tag_name }}" -R "${{ github.repository }}" \
+            -p 'webda-cli-*' -p install.sh -p install.ps1
+          sha256sum webda-cli-* install.sh install.ps1 > checksums.txt
+      - name: Upload checksums
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: checksums.txt

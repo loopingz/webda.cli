@@ -230,6 +230,26 @@ myapp lock      # ends the unlock on the server, then forgets it
 - The unlock is kept with the profile's tokens (same storage) and survives token refreshes. It ends with `lock`,
   `logout` (revoking the sign-in ends it on the server), its expiry or a server-side "lock everywhere"; a `423`
   answer then drops it and the CLI says to run `unlock` again.
+- **How long it lasts** is the server's choice: with Webda's token vault, 2 hours idle (each use of a stored token
+  extends it) and 12 hours at most. The CLI does not know the expiry in advance.
+- `--require-presence` (macOS): the unlock is only sent after Touch ID or your account password confirms you are
+  there. The CLI sends requests without it, and on the first `423` asks once per process, then retries with it; a
+  long-running `mcp` asks at its first vault call, then keeps it. This is a check made by the CLI, not a keychain
+  access control: it guards against other processes using the CLI unattended, not against someone reading your
+  keychain.
+- `--lock-on-screen-lock` (macOS, Linux with systemd-logind): a background watcher locks the unlock (on the server,
+  then locally) when the screen locks, and exits once that unlock is gone or replaced. It polls the session state every
+  few seconds (`ioreg` on macOS, `loginctl` on Linux); without a working probe `unlock` refuses before pairing. `mcp
+  --lock-on-screen-lock` does the same while it serves, each time the screen locks.
+- Both can be profile defaults in `~/.webdacli/config.yaml`:
+
+```yaml
+myapp:
+  url: https://example.com
+  unlock_presence: true
+  lock_on_screen_lock: true
+```
+
 - A server advertises it this way (operations ids, approval page with `{pairing}`, `{session}` and `{key}`, header):
 
 ```json

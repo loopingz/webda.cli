@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/loopingz/webda.cli/presence"
+	"github.com/loopingz/webda.cli/screenlock"
 	"github.com/loopingz/webda.cli/webdaclient"
 	"github.com/spf13/cobra"
 )
@@ -142,18 +146,32 @@ func callOperation(ctx context.Context, client *webdaclient.Client, endpoint, id
 	return json.Unmarshal(body, out)
 }
 
-func newUnlockCmd(env authEnv, client *webdaclient.Client, du *DeviceUnlock, endpoint string) *cobra.Command {
-	return &cobra.Command{
+// unlockOptions are the guards of an unlock.
+type unlockOptions struct {
+	// Presence withholds the unlock until Touch ID or the account password confirms the person is there (macOS).
+	Presence bool
+	// ScreenLock starts a background watcher that locks the unlock when the screen locks.
+	ScreenLock bool
+}
+
+func newUnlockCmd(env authEnv, client *webdaclient.Client, du *DeviceUnlock, endpoint, profile string, prof Profile) *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "unlock",
 		Short: "Unlock the server-side vault for this profile (approved in the browser)",
 		Long: "Asks the server to unlock its vault for this CLI. Approve the request in your browser with the " +
 			"confirmation code shown here; every request of the profile then carries the unlock until it ends " +
-			"(lock, logout, expiry or lock everywhere).",
+			"(lock, logout, expiry, lock everywhere, or the screen locking with --lock-on-screen-lock).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runUnlock(cmd.Context(), env, client, du, endpoint, cmd.ErrOrStderr())
+			var opts unlockOptions
+			opts.Presence, _ = cmd.Flags().GetBool("require-presence")
+			opts.ScreenLock, _ = cmd.Flags().GetBool("lock-on-screen-lock")
+			return runUnlock(cmd.Context(), env, client, du, endpoint, profile, opts, cmd.ErrOrStderr())
 		},
 	}
+	cmd.Flags().Bool("require-presence", prof.UnlockPresence, "ask for Touch ID or the account password before the unlock is used (macOS, once per process)")
+	cmd.Flags().Bool("lock-on-screen-lock", prof.LockOnScreenLock, "lock the unlock when the screen locks (macOS, Linux)")
+	return cmd
 }
 
 func newLockCmd(client *webdaclient.Client, du *DeviceUnlock, endpoint string) *cobra.Command {
@@ -166,11 +184,7 @@ func newLockCmd(client *webdaclient.Client, du *DeviceUnlock, endpoint string) *
 				_, err := fmt.Fprintln(cmd.ErrOrStderr(), "This profile is not unlocked.")
 				return err
 			}
-			// ending it server-side first: a key left there would keep working until it expires
-			if err := callOperation(cmd.Context(), client, endpoint, du.Lock, map[string]any{}, nil, nil); err != nil {
-				return err
-			}
-			if err := client.SetUnlock("", ""); err != nil {
+			if err := lockNow(cmd.Context(), client, du, endpoint); err != nil {
 				return err
 			}
 			_, err := fmt.Fprintln(cmd.ErrOrStderr(), "Locked.")
@@ -179,9 +193,45 @@ func newLockCmd(client *webdaclient.Client, du *DeviceUnlock, endpoint string) *
 	}
 }
 
+// lockNow ends the unlock on the server, then forgets it: a key left there would keep working until it expires.
+func lockNow(ctx context.Context, client *webdaclient.Client, du *DeviceUnlock, endpoint string) error {
+	if err := callOperation(ctx, client, endpoint, du.Lock, map[string]any{}, nil, nil); err != nil {
+		return err
+	}
+	return client.SetUnlock("", "", false)
+}
+
+// unlockFingerprint identifies an unlock without revealing it (the watcher's argument).
+func unlockFingerprint(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:8])
+}
+
+// presenceSupported and screenSupported probe the guards; tests replace them.
+var (
+	presenceSupported = presence.Supported
+	screenSupported   = screenlock.Supported
+)
+
+// checkGuards fails before pairing when a requested guard cannot work here.
+func checkGuards(ctx context.Context, opts unlockOptions) error {
+	if opts.Presence && !presenceSupported() {
+		return presence.ErrUnsupported
+	}
+	if opts.ScreenLock {
+		if err := screenSupported(ctx); err != nil {
+			return fmt.Errorf("--lock-on-screen-lock: %w", err)
+		}
+	}
+	return nil
+}
+
 // runUnlock pairs this CLI with the browser: the session id and key are made here, the key only travels in the
 // approval URL fragment (opened in the browser, never sent to the server by the CLI) and the unlock header.
-func runUnlock(ctx context.Context, env authEnv, client *webdaclient.Client, du *DeviceUnlock, endpoint string, out io.Writer) error {
+func runUnlock(ctx context.Context, env authEnv, client *webdaclient.Client, du *DeviceUnlock, endpoint, profile string, opts unlockOptions, out io.Writer) error {
+	if err := checkGuards(ctx, opts); err != nil {
+		return err
+	}
 	session, key, err := newSessionKey()
 	if err != nil {
 		return err
@@ -228,8 +278,15 @@ func runUnlock(ctx context.Context, env authEnv, client *webdaclient.Client, du 
 			return err
 		}
 		if status.Unlocked {
-			if err := client.SetUnlock(du.Header, value); err != nil {
+			if err := client.SetUnlock(du.Header, value, opts.Presence); err != nil {
 				return fmt.Errorf("unlocked, but the unlock could not be saved: %w", err)
+			}
+			if opts.ScreenLock {
+				if err := spawnLockWatcher(profile, unlockFingerprint(value)); err != nil {
+					// never leave an unlock the person expects to end with the screen
+					_ = lockNow(context.WithoutCancel(ctx), client, du, endpoint)
+					return fmt.Errorf("could not start the screen lock watcher, locked again: %w", err)
+				}
 			}
 			_, err := fmt.Fprintln(out, "Unlocked.")
 			return err
