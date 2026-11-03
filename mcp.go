@@ -268,7 +268,17 @@ func newMCPCmd(profile string, prof Profile, client *webdaclient.Client, baseURL
 					return fmt.Errorf("--lock-on-screen-lock: %w", err)
 				}
 				endpoint := operationsEndpoint(ops, baseURL)
-				go watchScreenForMCP(cmd.Context(), client, du, endpoint, func(m string) { _, _ = fmt.Fprintln(stderr, m) })
+				watchCtx, stop := context.WithCancel(cmd.Context())
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					watchScreenForMCP(watchCtx, client, du, endpoint, func(m string) { _, _ = fmt.Fprintln(stderr, m) })
+				}()
+				// the watcher ends with the server, never after it
+				defer func() {
+					stop()
+					<-done
+				}()
 			}
 			_, _ = fmt.Fprintf(stderr, "Serving %d tools of %s over MCP (stdio)\n", len(s.order), profile)
 			return s.serve(cmd.Context(), in)
