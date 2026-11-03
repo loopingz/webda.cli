@@ -74,6 +74,8 @@ func executeOperation(ctx context.Context, op Operation, client *webdaclient.Cli
 			}
 		case 400, 422:
 			hint = "; check operation inputs"
+		case 423:
+			hint = fmt.Sprintf("; the server vault is locked: run %s unlock", filepath.Base(os.Args[0]))
 		}
 		return nil, fmt.Errorf("%s: %s%s\n%s", op.Name, resp.Status, hint, ansi.Strip(strings.TrimSpace(string(rb))))
 	}

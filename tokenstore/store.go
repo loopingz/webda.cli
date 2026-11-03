@@ -14,6 +14,10 @@ type TokenInfo struct {
 	// Server is the origin (scheme://host:port) of the server the token was issued for; empty for tokens saved
 	// before this field existed.
 	Server string `json:"server,omitempty"`
+	// UnlockHeader and UnlockKey are a browser-approved device unlock (`unlock` command): the header sent with
+	// UnlockKey (`<session id>.<key>`) on every request to the server. The key is kept with the tokens only.
+	UnlockHeader string `json:"unlock_header,omitempty"`
+	UnlockKey    string `json:"unlock_key,omitempty"`
 	// Sequence is only read to detect tokens of the legacy /auth/cli sign-in; never written.
 	Sequence string `json:"sequence,omitempty"`
 }

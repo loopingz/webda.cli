@@ -213,6 +213,42 @@ myapp logout                       # revoke the sign-in and forget it
 - The CLI prints `Sign in at: <url>` before opening the browser; open it yourself if no
   browser appears.
 
+### Vault unlock
+
+A server can keep per-user secrets (third-party tokens) encrypted under a key the client holds, and unlock them for
+the CLI from the browser. When its `/operations` listing advertises it (`cli.device_unlock`, below), two commands
+appear:
+
+```bash
+myapp unlock    # shows a confirmation code and opens the approval page; approve it in the browser
+myapp lock      # ends the unlock on the server, then forgets it
+```
+
+- The CLI makes a session id and a 32-byte key itself. The key never goes in a request body, query or log: it travels
+  in the approval URL **fragment** (opened in your browser) and, once approved, in the advertised header on every
+  request of the profile. If no browser opens, the page is printed (it carries the key: do not share it).
+- The unlock is kept with the profile's tokens (same storage) and survives token refreshes. It ends with `lock`,
+  `logout` (revoking the sign-in ends it on the server), its expiry or a server-side "lock everywhere"; a `423`
+  answer then drops it and the CLI says to run `unlock` again.
+- A server advertises it this way (operations ids, approval page with `{pairing}`, `{session}` and `{key}`, header):
+
+```json
+"cli": {
+  "device_unlock": {
+    "request": "Vault.RequestDeviceUnlock",
+    "status": "Vault.DeviceStatus",
+    "lock": "Vault.LockDevice",
+    "approve_url": "https://example.com/connect/vault?pairing={pairing}#{session}.{key}",
+    "header": "X-Vault-Key"
+  }
+}
+```
+
+  The `request` operation takes `{ vaultSessionId, deviceName }` and answers `{ pairingId, code, expiresAt }`;
+  `status` takes `{ pairing }` (sent with the pending key) and answers `{ unlocked, pairing: "pending" | "gone" }`.
+  An approval page that is not HTTPS (except localhost), without a fragment, or a reserved header
+  (`Authorization`, `Cookie`...) is ignored.
+
 ### Token storage
 
 Tokens go to the OS keychain (service `webda-cli`, one entry per profile). Without a
