@@ -421,6 +421,104 @@ func TestRefreshKeepsTheDeviceUnlockAndSendsIt(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
+func TestPresenceWithholdsTheUnlockUntilNeeded(t *testing.T) {
+	f := newFixture(t, "")
+	var seen []string
+	f.s.Handle("/api/v", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("X-Example-Key")
+		seen = append(seen, key)
+		if key == "" {
+			w.WriteHeader(http.StatusLocked)
+			return
+		}
+		_, _ = fmt.Fprintln(w, `{}`)
+	}))
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0", ExpiresAt: time.Now().Add(time.Hour), UnlockHeader: "X-Example-Key", UnlockKey: "s.k", UnlockPresence: true})
+	c := f.client(t)
+	checks := 0
+	allow := false
+	c.PresenceCheck = func() error {
+		checks++
+		if !allow {
+			return errors.New("canceled by the user")
+		}
+		return nil
+	}
+	do := func() int {
+		req, _ := http.NewRequest(http.MethodPost, f.s.URL+"/api/v", strings.NewReader(`{"x":1}`))
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	// refused: the 423 comes back, the key was never sent, the unlock is kept
+	if code := do(); code != http.StatusLocked || checks != 1 || !c.Unlocked() {
+		t.Fatalf("code %d checks %d", code, checks)
+	}
+	allow = true
+	if code := do(); code != http.StatusOK || checks != 2 {
+		t.Fatalf("code %d checks %d", code, checks)
+	}
+	// confirmed once per process: sent directly afterwards
+	if code := do(); code != http.StatusOK || checks != 2 {
+		t.Fatalf("code %d checks %d", code, checks)
+	}
+	if strings.Join(seen, ",") != ",,s.k,s.k" {
+		t.Fatalf("keys sent %v", seen)
+	}
+}
+
+func TestSealedUnlockIsOpenedOncePerProcessWhenNeeded(t *testing.T) {
+	f := newFixture(t, "")
+	var seen []string
+	f.s.Handle("/api/s", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("X-Example-Key")
+		seen = append(seen, key)
+		if key != "s.k" {
+			w.WriteHeader(http.StatusLocked)
+			return
+		}
+		_, _ = fmt.Fprintln(w, `{}`)
+	}))
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0", ExpiresAt: time.Now().Add(time.Hour), UnlockHeader: "X-Example-Key", UnlockSealed: "SEALED", UnlockPresence: true})
+	c := f.client(t)
+	opens := 0
+	c.Opener = func(sealed string) (string, error) {
+		opens++
+		if sealed != "SEALED" {
+			return "", errors.New("wrong token")
+		}
+		return "s.k", nil
+	}
+	do := func() int {
+		req, _ := http.NewRequest(http.MethodGet, f.s.URL+"/api/s", nil)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := do(); code != http.StatusOK || opens != 1 {
+		t.Fatalf("code %d opens %d", code, opens)
+	}
+	if code := do(); code != http.StatusOK || opens != 1 {
+		t.Fatalf("code %d opens %d", code, opens)
+	}
+	if strings.Join(seen, ",") != ",s.k,s.k" {
+		t.Fatalf("sent %v", seen)
+	}
+	if id := c.UnlockID(); id != "SEALED" {
+		t.Fatalf("id %q", id)
+	}
+	// the opened key never reaches the store
+	if stored, _ := f.store.Load("p"); stored.UnlockKey != "" || stored.UnlockSealed != "SEALED" {
+		t.Fatalf("stored %+v", stored)
+	}
+}
+
 func TestSetUnlockKeepsRotatedTokensAndClears(t *testing.T) {
 	f := newFixture(t, "")
 	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
@@ -431,14 +529,14 @@ func TestSetUnlockKeepsRotatedTokensAndClears(t *testing.T) {
 	}
 	// another process rotated the refresh token meanwhile: SetUnlock must not write the old one back
 	f.save(t, tokenstore.TokenInfo{AccessToken: "a1", RefreshToken: "r1"})
-	if err := c.SetUnlock("X-Example-Key", "s.k"); err != nil {
+	if err := c.SetUnlock(Unlock{Header: "X-Example-Key", Key: "s.k"}); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ := f.store.Load("p")
 	if stored.RefreshToken != "r1" || stored.UnlockKey != "s.k" || stored.UnlockHeader != "X-Example-Key" || !c.Unlocked() {
 		t.Fatalf("stored %+v", stored)
 	}
-	if err := c.SetUnlock("", ""); err != nil {
+	if err := c.SetUnlock(Unlock{}); err != nil {
 		t.Fatal(err)
 	}
 	if stored, _ := f.store.Load("p"); stored.UnlockKey != "" || c.Unlocked() || stored.RefreshToken != "r1" {
@@ -478,7 +576,7 @@ func TestA423DropsTheUnlockItCarried(t *testing.T) {
 		t.Fatalf("stored %+v", stored)
 	}
 	// the unlock was replaced meanwhile: a late 423 for the old one keeps the new one
-	_ = c.SetUnlock("X-Example-Key", "new")
+	_ = c.SetUnlock(Unlock{Header: "X-Example-Key", Key: "new"})
 	c.unlockEnded("old")
 	if !c.Unlocked() {
 		t.Fatal("a replaced unlock must be kept")
@@ -490,7 +588,93 @@ func TestSetUnlockReportsAnUnavailableLockFile(t *testing.T) {
 	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
 	c := f.client(t)
 	c.LockFile = t.TempDir() + "/missing-dir/p.lock"
-	if err := c.SetUnlock("X-Example-Key", "s.k"); err == nil {
+	if err := c.SetUnlock(Unlock{Header: "X-Example-Key", Key: "s.k"}); err == nil {
 		t.Fatal("a lock file that cannot be created must fail")
+	}
+}
+
+func TestConfirmPresenceRefusals(t *testing.T) {
+	f := newFixture(t, "")
+	f.s.Handle("/api/r", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Example-Key") == "" {
+			w.WriteHeader(http.StatusLocked)
+		}
+	}))
+	for name, u := range map[string]Unlock{
+		"sealed without opener":  {Header: "X-Example-Key", Sealed: "S", Presence: true},
+		"guarded without check":  {Header: "X-Example-Key", Key: "s.k", Presence: true},
+		"sealed opener fails":    {Header: "X-Example-Key", Sealed: "FAIL", Presence: true},
+		"guarded check declined": {Header: "X-Example-Key", Key: "deny", Presence: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+			c := f.client(t)
+			var stderr bytes.Buffer
+			c.stderr = &stderr
+			if err := c.SetUnlock(u); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(name, "fails") {
+				c.Opener = func(string) (string, error) { return "", errors.New("hardware said no") }
+			}
+			if strings.Contains(name, "declined") {
+				c.PresenceCheck = func() error { return errors.New("declined") }
+			}
+			req, _ := http.NewRequest(http.MethodGet, f.s.URL+"/api/r", nil)
+			resp, err := c.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusLocked || !strings.Contains(stderr.String(), "not used") || !c.Unlocked() {
+				t.Fatalf("status %d stderr %q", resp.StatusCode, stderr.String())
+			}
+		})
+	}
+}
+
+func TestPresenceRetryKeepsAnUnreplayableBody(t *testing.T) {
+	f := newFixture(t, "")
+	f.s.Handle("/api/b", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusLocked) }))
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+	c := f.client(t)
+	_ = c.SetUnlock(Unlock{Header: "X-Example-Key", Key: "s.k", Presence: true})
+	checks := 0
+	c.PresenceCheck = func() error { checks++; return nil }
+	req, _ := http.NewRequest(http.MethodPost, f.s.URL+"/api/b", io.NopCloser(strings.NewReader("x")))
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusLocked || checks != 0 {
+		t.Fatalf("status %d checks %d", resp.StatusCode, checks)
+	}
+}
+
+func TestReloadUnlockAdoptsAnotherProcess(t *testing.T) {
+	f := newFixture(t, "")
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+	c := f.client(t)
+	other := f.client(t)
+	if err := other.SetUnlock(Unlock{Header: "X-Example-Key", Sealed: "S2", Presence: true}); err != nil {
+		t.Fatal(err)
+	}
+	c.ReloadUnlock()
+	if c.UnlockID() != "S2" {
+		t.Fatalf("id %q", c.UnlockID())
+	}
+	_ = other.SetUnlock(Unlock{})
+	c.ReloadUnlock()
+	if c.Unlocked() {
+		t.Fatal("a cleared unlock must be adopted")
+	}
+	// nothing stored: nothing changes
+	_ = f.store.Delete("p")
+	_ = c.SetUnlock(Unlock{Header: "X-Example-Key", Key: "mem"})
+	_ = f.store.Delete("p")
+	c.ReloadUnlock()
+	if c.UnlockID() != "mem" {
+		t.Fatal("a missing store entry must not clear the unlock in memory")
 	}
 }
