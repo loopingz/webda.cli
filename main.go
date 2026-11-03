@@ -18,6 +18,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/loopingz/webda.cli/enclave"
 	"github.com/loopingz/webda.cli/oauth"
 	"github.com/loopingz/webda.cli/presence"
 	"github.com/loopingz/webda.cli/tokenstore"
@@ -432,6 +433,10 @@ func runCLI() error {
 	}
 	cli.LockFile = lockPath(profile)
 	cli.PresenceCheck = func() error { return presence.Check("use the vault unlock of " + profile) }
+	cli.Opener = func(sealed string) (string, error) {
+		plain, err := enclave.Open(sealed, "use the vault unlock of "+profile)
+		return string(plain), err
+	}
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, timeout)
 	remoteOps, info, fetchErr := fetchOperations(fetchCtx, profile, meta)
 	fetchCancel()

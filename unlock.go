@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/loopingz/webda.cli/enclave"
 	"github.com/loopingz/webda.cli/presence"
 	"github.com/loopingz/webda.cli/screenlock"
 	"github.com/loopingz/webda.cli/webdaclient"
@@ -198,7 +199,25 @@ func lockNow(ctx context.Context, client *webdaclient.Client, du *DeviceUnlock, 
 	if err := callOperation(ctx, client, endpoint, du.Lock, map[string]any{}, nil, nil); err != nil {
 		return err
 	}
-	return client.SetUnlock("", "", false)
+	return client.SetUnlock(webdaclient.Unlock{})
+}
+
+// guardedUnlock is the unlock to store: sealed to the Secure Enclave when presence is required and one is available
+// (the hardware then refuses to open it without Touch ID or the password), else guarded by the CLI's own check.
+func guardedUnlock(header, value string, requirePresence bool) (webdaclient.Unlock, string, error) {
+	if !requirePresence {
+		return webdaclient.Unlock{Header: header, Key: value}, "", nil
+	}
+	if enclaveAvailable() {
+		sealed, err := enclaveSeal([]byte(value))
+		if err != nil {
+			return webdaclient.Unlock{}, "", err
+		}
+		return webdaclient.Unlock{Header: header, Sealed: sealed, Presence: true},
+			"The unlock is sealed to this Mac's Secure Enclave: using it needs Touch ID or your password.", nil
+	}
+	return webdaclient.Unlock{Header: header, Key: value, Presence: true},
+		"No Secure Enclave available: the CLI asks for Touch ID or your password before using the unlock.", nil
 }
 
 // unlockFingerprint identifies an unlock without revealing it (the watcher's argument).
@@ -207,15 +226,17 @@ func unlockFingerprint(value string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// presenceSupported and screenSupported probe the guards; tests replace them.
+// The guard probes and the Secure Enclave sealing; tests replace them.
 var (
 	presenceSupported = presence.Supported
 	screenSupported   = screenlock.Supported
+	enclaveAvailable  = enclave.Available
+	enclaveSeal       = enclave.Seal
 )
 
 // checkGuards fails before pairing when a requested guard cannot work here.
 func checkGuards(ctx context.Context, opts unlockOptions) error {
-	if opts.Presence && !presenceSupported() {
+	if opts.Presence && !enclaveAvailable() && !presenceSupported() {
 		return presence.ErrUnsupported
 	}
 	if opts.ScreenLock {
@@ -278,17 +299,25 @@ func runUnlock(ctx context.Context, env authEnv, client *webdaclient.Client, du 
 			return err
 		}
 		if status.Unlocked {
-			if err := client.SetUnlock(du.Header, value, opts.Presence); err != nil {
+			stored, how, err := guardedUnlock(du.Header, value, opts.Presence)
+			if err != nil {
+				_ = lockNow(context.WithoutCancel(ctx), client, du, endpoint)
+				return fmt.Errorf("could not protect the unlock, locked again: %w", err)
+			}
+			if err := client.SetUnlock(stored); err != nil {
 				return fmt.Errorf("unlocked, but the unlock could not be saved: %w", err)
 			}
+			if how != "" {
+				_, _ = fmt.Fprintln(out, how)
+			}
 			if opts.ScreenLock {
-				if err := spawnLockWatcher(profile, unlockFingerprint(value)); err != nil {
+				if err := spawnLockWatcher(profile, unlockFingerprint(client.UnlockID())); err != nil {
 					// never leave an unlock the person expects to end with the screen
 					_ = lockNow(context.WithoutCancel(ctx), client, du, endpoint)
 					return fmt.Errorf("could not start the screen lock watcher, locked again: %w", err)
 				}
 			}
-			_, err := fmt.Fprintln(out, "Unlocked.")
+			_, err = fmt.Fprintln(out, "Unlocked.")
 			return err
 		}
 		if status.Pairing == "gone" {

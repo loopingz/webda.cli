@@ -196,7 +196,7 @@ func TestLockEndsTheUnlockAnd423DropsIt(t *testing.T) {
 	}
 
 	// an unlock the server ended (423) is dropped
-	if err := client.SetUnlock(unlockHeader, "s.k", false); err != nil {
+	if err := client.SetUnlock(webdaclient.Unlock{Header: unlockHeader, Key: "s.k"}); err != nil {
 		t.Fatal(err)
 	}
 	err := callOperation(context.Background(), client, endpoint, "Forge.GetIssue", map[string]any{}, nil, nil)

@@ -469,3 +469,52 @@ func TestPresenceWithholdsTheUnlockUntilNeeded(t *testing.T) {
 		t.Fatalf("keys sent %v", seen)
 	}
 }
+
+func TestSealedUnlockIsOpenedOncePerProcessWhenNeeded(t *testing.T) {
+	f := newFixture(t, "")
+	var seen []string
+	f.s.Handle("/api/s", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("X-Example-Key")
+		seen = append(seen, key)
+		if key != "s.k" {
+			w.WriteHeader(http.StatusLocked)
+			return
+		}
+		_, _ = fmt.Fprintln(w, `{}`)
+	}))
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0", ExpiresAt: time.Now().Add(time.Hour), UnlockHeader: "X-Example-Key", UnlockSealed: "SEALED", UnlockPresence: true})
+	c := f.client(t)
+	opens := 0
+	c.Opener = func(sealed string) (string, error) {
+		opens++
+		if sealed != "SEALED" {
+			return "", errors.New("wrong token")
+		}
+		return "s.k", nil
+	}
+	do := func() int {
+		req, _ := http.NewRequest(http.MethodGet, f.s.URL+"/api/s", nil)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := do(); code != http.StatusOK || opens != 1 {
+		t.Fatalf("code %d opens %d", code, opens)
+	}
+	if code := do(); code != http.StatusOK || opens != 1 {
+		t.Fatalf("code %d opens %d", code, opens)
+	}
+	if strings.Join(seen, ",") != ",s.k,s.k" {
+		t.Fatalf("sent %v", seen)
+	}
+	if id := c.UnlockID(); id != "SEALED" {
+		t.Fatalf("id %q", id)
+	}
+	// the opened key never reaches the store
+	if stored, _ := f.store.Load("p"); stored.UnlockKey != "" || stored.UnlockSealed != "SEALED" {
+		t.Fatalf("stored %+v", stored)
+	}
+}

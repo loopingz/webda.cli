@@ -46,8 +46,8 @@ func runLockWatch(ctx context.Context, client *webdaclient.Client, du *DeviceUnl
 	defer t.Stop()
 	for {
 		client.ReloadUnlock()
-		key := client.UnlockKey()
-		if key == "" || unlockFingerprint(key) != fingerprint {
+		id := client.UnlockID()
+		if id == "" || unlockFingerprint(id) != fingerprint {
 			return nil
 		}
 		if locked, err := screenLocked(ctx); err == nil && locked {

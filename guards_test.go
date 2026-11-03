@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/loopingz/webda.cli/presence"
+	"github.com/loopingz/webda.cli/webdaclient"
 )
 
 func guardSeams(t *testing.T, presenceOK bool, screenErr error) *[]string {
@@ -82,7 +83,7 @@ func TestLockWatchLocksOnScreenLockAndStopsWhenReplaced(t *testing.T) {
 	f := &fakeVault{outcome: "approve"}
 	client, store, du, endpoint, _, _ := unlockFixture(t, f)
 	guardSeams(t, true, nil)
-	if err := client.SetUnlock(unlockHeader, "s.k", false); err != nil {
+	if err := client.SetUnlock(webdaclient.Unlock{Header: unlockHeader, Key: "s.k"}); err != nil {
 		t.Fatal(err)
 	}
 	polls := 0
@@ -99,7 +100,7 @@ func TestLockWatchLocksOnScreenLockAndStopsWhenReplaced(t *testing.T) {
 
 	// another unlock replaced the watched one: the watcher leaves it alone and stops
 	f.locked = false
-	if err := client.SetUnlock(unlockHeader, "s.new", false); err != nil {
+	if err := client.SetUnlock(webdaclient.Unlock{Header: unlockHeader, Key: "s.new"}); err != nil {
 		t.Fatal(err)
 	}
 	screenLocked = func(context.Context) (bool, error) { return true, nil }
@@ -115,7 +116,7 @@ func TestMCPWatchLocksEachScreenLock(t *testing.T) {
 	f := &fakeVault{outcome: "approve"}
 	client, _, du, endpoint, _, _ := unlockFixture(t, f)
 	guardSeams(t, true, nil)
-	_ = client.SetUnlock(unlockHeader, "s.k", false)
+	_ = client.SetUnlock(webdaclient.Unlock{Header: unlockHeader, Key: "s.k"})
 	ctx, cancel := context.WithCancel(context.Background())
 	waits := 0
 	screenWait = func(ctx context.Context, _ time.Duration, locked bool) error {
@@ -130,5 +131,55 @@ func TestMCPWatchLocksEachScreenLock(t *testing.T) {
 	watchScreenForMCP(ctx, client, du, endpoint, func(m string) { logs = append(logs, m) })
 	if !f.locked || client.Unlocked() || len(logs) != 1 || !strings.Contains(logs[0], "locked") {
 		t.Fatalf("locked=%v logs=%v", f.locked, logs)
+	}
+}
+
+func TestPresenceSealsToTheSecureEnclaveWhenAvailable(t *testing.T) {
+	f := &fakeVault{outcome: "approve"}
+	client, store, du, endpoint, env, out := unlockFixture(t, f)
+	guardSeams(t, true, nil)
+	oldAvail, oldSeal := enclaveAvailable, enclaveSeal
+	t.Cleanup(func() { enclaveAvailable, enclaveSeal = oldAvail, oldSeal })
+	var sealedPlain string
+	enclaveAvailable = func() bool { return true }
+	enclaveSeal = func(plain []byte) (string, error) {
+		sealedPlain = string(plain)
+		return "SEALED", nil
+	}
+	if err := runUnlock(context.Background(), env, client, du, endpoint, "p", unlockOptions{Presence: true}, out); err != nil {
+		t.Fatal(err)
+	}
+	ti, _ := store.Load("p")
+	if ti.UnlockKey != "" || ti.UnlockSealed != "SEALED" || !ti.UnlockPresence || sealedPlain != f.approved {
+		t.Fatalf("stored %+v (sealed %q, approved %q)", ti, sealedPlain, f.approved)
+	}
+	if !strings.Contains(out.String(), "Secure Enclave") {
+		t.Fatalf("output %q", out.String())
+	}
+
+	// a failed seal locks the fresh unlock again instead of storing it in clear
+	enclaveSeal = func([]byte) (string, error) { return "", errors.New("enclave busy") }
+	f.locked = false
+	err := runUnlock(context.Background(), env, client, du, endpoint, "p", unlockOptions{Presence: true}, out)
+	if err == nil || !strings.Contains(err.Error(), "locked again") || !f.locked {
+		t.Fatalf("err %v locked %v", err, f.locked)
+	}
+}
+
+func TestPresenceFallsBackToTheCLICheckWithoutEnclave(t *testing.T) {
+	f := &fakeVault{outcome: "approve"}
+	client, store, du, endpoint, env, out := unlockFixture(t, f)
+	guardSeams(t, true, nil)
+	old := enclaveAvailable
+	t.Cleanup(func() { enclaveAvailable = old })
+	enclaveAvailable = func() bool { return false }
+	if err := runUnlock(context.Background(), env, client, du, endpoint, "p", unlockOptions{Presence: true}, out); err != nil {
+		t.Fatal(err)
+	}
+	if ti, _ := store.Load("p"); ti.UnlockKey == "" || ti.UnlockSealed != "" || !ti.UnlockPresence {
+		t.Fatalf("stored %+v", ti)
+	}
+	if !strings.Contains(out.String(), "No Secure Enclave") {
+		t.Fatalf("output %q", out.String())
 	}
 }

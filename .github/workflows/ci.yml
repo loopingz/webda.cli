@@ -87,11 +87,15 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build
+        if: matrix.goos != 'darwin'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: ${{ matrix.goos == 'darwin' && '1' || '0' }}
+          CGO_ENABLED: "0"
         run: go build -o webda-cli-${{ matrix.goos }}-${{ matrix.goarch }} .
+      - name: Build (Secure Enclave bridge)
+        if: matrix.goos == 'darwin'
+        run: scripts/build-sebridge.sh ${{ matrix.goarch }} webda-cli-darwin-${{ matrix.goarch }}
 
   vet:
     name: Vet

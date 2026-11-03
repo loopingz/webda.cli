@@ -57,7 +57,7 @@ jobs:
             install.sh
             install.ps1
 
-  # darwin builds use cgo (Touch ID through LocalAuthentication for `unlock --require-presence`): built on macOS
+  # darwin builds use cgo and a Swift bridge (Secure Enclave and Touch ID for `unlock --require-presence`): built on macOS
   build-darwin:
     name: Build Release (darwin, cgo)
     needs: release-please
@@ -79,9 +79,8 @@ jobs:
           DATE="$(date -u +%Y-%m-%d)"
           LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${DATE}"
           for GOARCH in amd64 arm64; do
-            CGO_ENABLED=1 GOOS=darwin GOARCH=$GOARCH go build -ldflags="${LDFLAGS}" -o "webda-cli-darwin-${GOARCH}" .
-            # the Touch ID bridge must be linked in, or --require-presence would be refused at run time
-            otool -L "webda-cli-darwin-${GOARCH}" | grep -q LocalAuthentication
+            # Secure Enclave bridge (Swift, CryptoKit) + cgo; fails unless the bridge is linked in
+            scripts/build-sebridge.sh "$GOARCH" "webda-cli-darwin-${GOARCH}" -ldflags="${LDFLAGS}"
           done
       - name: Upload release assets
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
