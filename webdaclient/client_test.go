@@ -375,3 +375,122 @@ func TestLegacyTokenIsNeverUsed(t *testing.T) {
 		t.Fatalf("legacy refresh token sent to the token endpoint (%d calls)", n)
 	}
 }
+
+func TestRefreshKeepsTheDeviceUnlockAndSendsIt(t *testing.T) {
+	f := newFixture(t, "")
+	var unlock []string
+	f.s.Handle("/api/u", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		unlock = append(unlock, r.Header.Get("X-Example-Key"))
+		_, _ = fmt.Fprintln(w, `{}`)
+	}))
+	f.save(t, tokenstore.TokenInfo{AccessToken: "old", RefreshToken: "r0", ExpiresAt: time.Now(), UnlockHeader: "X-Example-Key", UnlockKey: "s.k"})
+	c := f.client(t)
+	if _, err := f.get(t, c); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := f.store.Load("p")
+	if stored.RefreshToken != "r1" || stored.UnlockHeader != "X-Example-Key" || stored.UnlockKey != "s.k" {
+		t.Fatalf("refresh lost the unlock: %+v", stored)
+	}
+	req, _ := http.NewRequest(http.MethodGet, f.s.URL+"/api/u", nil)
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	// a request setting the header itself keeps its value; another origin never gets it
+	req, _ = http.NewRequest(http.MethodGet, f.s.URL+"/api/u", nil)
+	req.Header.Set("X-Example-Key", "mine")
+	if resp, err = c.Do(req); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(unlock) != 2 || unlock[0] != "s.k" || unlock[1] != "mine" {
+		t.Fatalf("unlock headers %v", unlock)
+	}
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Example-Key") != "" {
+			t.Error("unlock sent to another origin")
+		}
+	}))
+	defer other.Close()
+	req, _ = http.NewRequest(http.MethodGet, other.URL, nil)
+	if resp, err = c.Do(req); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestSetUnlockKeepsRotatedTokensAndClears(t *testing.T) {
+	f := newFixture(t, "")
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+	c := f.client(t)
+	c.LockFile = t.TempDir() + "/p.lock"
+	if c.Unlocked() {
+		t.Fatal("not unlocked yet")
+	}
+	// another process rotated the refresh token meanwhile: SetUnlock must not write the old one back
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a1", RefreshToken: "r1"})
+	if err := c.SetUnlock("X-Example-Key", "s.k"); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := f.store.Load("p")
+	if stored.RefreshToken != "r1" || stored.UnlockKey != "s.k" || stored.UnlockHeader != "X-Example-Key" || !c.Unlocked() {
+		t.Fatalf("stored %+v", stored)
+	}
+	if err := c.SetUnlock("", ""); err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ := f.store.Load("p"); stored.UnlockKey != "" || c.Unlocked() || stored.RefreshToken != "r1" {
+		t.Fatalf("stored %+v", stored)
+	}
+}
+
+func TestA423DropsTheUnlockItCarried(t *testing.T) {
+	f := newFixture(t, "")
+	f.s.Handle("/api/l", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusLocked)
+	}))
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0", UnlockHeader: "X-Example-Key", UnlockKey: "s.k"})
+	c := f.client(t)
+	var stderr bytes.Buffer
+	c.stderr = &stderr
+	// a request that set the header itself: its 423 is not about the stored unlock
+	req, _ := http.NewRequest(http.MethodGet, f.s.URL+"/api/l", nil)
+	req.Header.Set("X-Example-Key", "other")
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if !c.Unlocked() {
+		t.Fatal("a 423 to another key must not drop the stored unlock")
+	}
+	req, _ = http.NewRequest(http.MethodGet, f.s.URL+"/api/l", nil)
+	if resp, err = c.Do(req); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if c.Unlocked() || !strings.Contains(stderr.String(), "run unlock") {
+		t.Fatalf("unlocked %v, stderr %q", c.Unlocked(), stderr.String())
+	}
+	if stored, _ := f.store.Load("p"); stored.UnlockKey != "" {
+		t.Fatalf("stored %+v", stored)
+	}
+	// the unlock was replaced meanwhile: a late 423 for the old one keeps the new one
+	_ = c.SetUnlock("X-Example-Key", "new")
+	c.unlockEnded("old")
+	if !c.Unlocked() {
+		t.Fatal("a replaced unlock must be kept")
+	}
+}
+
+func TestSetUnlockReportsAnUnavailableLockFile(t *testing.T) {
+	f := newFixture(t, "")
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+	c := f.client(t)
+	c.LockFile = t.TempDir() + "/missing-dir/p.lock"
+	if err := c.SetUnlock("X-Example-Key", "s.k"); err == nil {
+		t.Fatal("a lock file that cannot be created must fail")
+	}
+}

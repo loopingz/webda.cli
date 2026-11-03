@@ -60,6 +60,8 @@ type ServerInfo struct {
 	CLIDownloadURL    string
 	// Aliases maps a model plural to its singular in operation names ("MindNodes" → "MindNode").
 	Aliases map[string]string
+	// DeviceUnlock is the browser-approved unlock the server advertises (`cli.device_unlock`), nil when none.
+	DeviceUnlock *DeviceUnlock
 }
 
 // operationsResponse attempts to map possible shapes.
@@ -194,6 +196,7 @@ func parseOperationsResponse(body []byte) ([]Operation, ServerInfo, error) {
 		if cli, ok := gen["cli"].(map[string]any); ok {
 			info.CLIVersionRange, _ = cli["version_range"].(string)
 			info.CLIDownloadURL, _ = cli["download_url"].(string)
+			info.DeviceUnlock = parseDeviceUnlock(cli["device_unlock"])
 		}
 		ops, err := parseOperations(body)
 		return ops, info, err
@@ -498,6 +501,10 @@ func runCLI() error {
 		fmt.Fprintf(os.Stderr, "CLI update available (requires %s). Run %s update.\n", serverInfo.CLIVersionRange, invoked)
 	}
 	root.AddCommand(stubCommand(newAuthCmd(env, profile, prof)), stubCommand(newLogoutCmd(env, profile, prof)))
+	if du := serverInfo.DeviceUnlock; du != nil {
+		endpoint := operationsEndpoint(ops, baseURL)
+		addIfAbsent(root, newUnlockCmd(env, cli, du, endpoint), newLockCmd(cli, du, endpoint))
+	}
 	addExplorer(root, profile, baseURL, ops)
 	return root.Execute()
 }
