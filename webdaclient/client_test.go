@@ -592,3 +592,89 @@ func TestSetUnlockReportsAnUnavailableLockFile(t *testing.T) {
 		t.Fatal("a lock file that cannot be created must fail")
 	}
 }
+
+func TestConfirmPresenceRefusals(t *testing.T) {
+	f := newFixture(t, "")
+	f.s.Handle("/api/r", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Example-Key") == "" {
+			w.WriteHeader(http.StatusLocked)
+		}
+	}))
+	for name, u := range map[string]Unlock{
+		"sealed without opener":  {Header: "X-Example-Key", Sealed: "S", Presence: true},
+		"guarded without check":  {Header: "X-Example-Key", Key: "s.k", Presence: true},
+		"sealed opener fails":    {Header: "X-Example-Key", Sealed: "FAIL", Presence: true},
+		"guarded check declined": {Header: "X-Example-Key", Key: "deny", Presence: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+			c := f.client(t)
+			var stderr bytes.Buffer
+			c.stderr = &stderr
+			if err := c.SetUnlock(u); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(name, "fails") {
+				c.Opener = func(string) (string, error) { return "", errors.New("hardware said no") }
+			}
+			if strings.Contains(name, "declined") {
+				c.PresenceCheck = func() error { return errors.New("declined") }
+			}
+			req, _ := http.NewRequest(http.MethodGet, f.s.URL+"/api/r", nil)
+			resp, err := c.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusLocked || !strings.Contains(stderr.String(), "not used") || !c.Unlocked() {
+				t.Fatalf("status %d stderr %q", resp.StatusCode, stderr.String())
+			}
+		})
+	}
+}
+
+func TestPresenceRetryKeepsAnUnreplayableBody(t *testing.T) {
+	f := newFixture(t, "")
+	f.s.Handle("/api/b", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusLocked) }))
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+	c := f.client(t)
+	_ = c.SetUnlock(Unlock{Header: "X-Example-Key", Key: "s.k", Presence: true})
+	checks := 0
+	c.PresenceCheck = func() error { checks++; return nil }
+	req, _ := http.NewRequest(http.MethodPost, f.s.URL+"/api/b", io.NopCloser(strings.NewReader("x")))
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusLocked || checks != 0 {
+		t.Fatalf("status %d checks %d", resp.StatusCode, checks)
+	}
+}
+
+func TestReloadUnlockAdoptsAnotherProcess(t *testing.T) {
+	f := newFixture(t, "")
+	f.save(t, tokenstore.TokenInfo{AccessToken: "a0", RefreshToken: "r0"})
+	c := f.client(t)
+	other := f.client(t)
+	if err := other.SetUnlock(Unlock{Header: "X-Example-Key", Sealed: "S2", Presence: true}); err != nil {
+		t.Fatal(err)
+	}
+	c.ReloadUnlock()
+	if c.UnlockID() != "S2" {
+		t.Fatalf("id %q", c.UnlockID())
+	}
+	_ = other.SetUnlock(Unlock{})
+	c.ReloadUnlock()
+	if c.Unlocked() {
+		t.Fatal("a cleared unlock must be adopted")
+	}
+	// nothing stored: nothing changes
+	_ = f.store.Delete("p")
+	_ = c.SetUnlock(Unlock{Header: "X-Example-Key", Key: "mem"})
+	_ = f.store.Delete("p")
+	c.ReloadUnlock()
+	if c.UnlockID() != "mem" {
+		t.Fatal("a missing store entry must not clear the unlock in memory")
+	}
+}

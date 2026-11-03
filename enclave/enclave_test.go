@@ -90,3 +90,37 @@ func TestUnavailableByDefaultWithoutTheBridge(t *testing.T) {
 		}
 	}
 }
+
+type failing struct{ noKey bool }
+
+func (failing) available() bool { return true }
+func (f failing) create() ([]byte, []byte, error) {
+	if f.noKey {
+		return nil, nil, errors.New("no key")
+	}
+	return []byte("blob"), []byte("not a point"), nil
+}
+func (failing) agree([]byte, []byte, string) ([]byte, error) { return []byte("short"), nil }
+
+func TestSealAndOpenErrors(t *testing.T) {
+	old := se
+	t.Cleanup(func() { se = old })
+	se = failing{noKey: true}
+	if _, err := Seal([]byte("x")); err == nil {
+		t.Fatal("key creation failure must fail")
+	}
+	se = failing{}
+	if _, err := Seal([]byte("x")); err == nil {
+		t.Fatal("an invalid public key must fail")
+	}
+	s := withSoft(t)
+	token, _ := Seal([]byte("x"))
+	se = failing{}
+	if _, err := Open(token, "why"); err == nil {
+		t.Fatal("a bad shared secret must not open")
+	}
+	_ = s
+	if _, err := (unavailable{}).agree(nil, nil, ""); !errors.Is(err, ErrUnavailable) {
+		t.Fatal(err)
+	}
+}

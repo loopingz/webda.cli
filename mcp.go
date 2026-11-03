@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/loopingz/webda.cli/screenlock"
 	"github.com/loopingz/webda.cli/webdaclient"
 	"github.com/spf13/cobra"
 )
@@ -265,7 +264,7 @@ func newMCPCmd(profile string, prof Profile, client *webdaclient.Client, baseURL
 				if du == nil {
 					return fmt.Errorf("--lock-on-screen-lock: the server advertises no vault unlock")
 				}
-				if err := screenlock.Supported(cmd.Context()); err != nil {
+				if err := screenSupported(cmd.Context()); err != nil {
 					return fmt.Errorf("--lock-on-screen-lock: %w", err)
 				}
 				endpoint := operationsEndpoint(ops, baseURL)

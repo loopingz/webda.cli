@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -181,5 +182,84 @@ func TestPresenceFallsBackToTheCLICheckWithoutEnclave(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "No Secure Enclave") {
 		t.Fatalf("output %q", out.String())
+	}
+}
+
+func TestMCPCommandScreenLockOption(t *testing.T) {
+	f := &fakeVault{outcome: "approve"}
+	client, _, du, _, _, _ := unlockFixture(t, f)
+	run := func(du *DeviceUnlock, screenErr error) (string, error) {
+		guardSeams(t, true, screenErr)
+		screenWait = func(ctx context.Context, _ time.Duration, _ bool) error { <-ctx.Done(); return ctx.Err() }
+		cmd := newMCPCmd("p", Profile{LockOnScreenLock: true}, client, "http://x", nil, du, strings.NewReader(""))
+		cmd.Flags().Duration("timeout", 0, "")
+		stderr := &bytes.Buffer{}
+		cmd.SetErr(stderr)
+		cmd.SetOut(&bytes.Buffer{})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		cmd.SetContext(ctx)
+		err := cmd.RunE(cmd, nil)
+		return stderr.String(), err
+	}
+	if out, err := run(du, nil); err != nil || !strings.Contains(out, "Serving") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if _, err := run(nil, nil); err == nil || !strings.Contains(err.Error(), "no vault unlock") {
+		t.Fatal(err)
+	}
+	if _, err := run(du, errors.New("no logind")); err == nil || !strings.Contains(err.Error(), "no logind") {
+		t.Fatal(err)
+	}
+}
+
+func TestLockWatchCommandStopsWithItsContext(t *testing.T) {
+	f := &fakeVault{outcome: "approve"}
+	client, _, du, endpoint, _, _ := unlockFixture(t, f)
+	guardSeams(t, true, nil)
+	_ = client.SetUnlock(webdaclient.Unlock{Header: unlockHeader, Key: "s.k"})
+	screenLocked = func(context.Context) (bool, error) { return false, errors.New("probe failed") }
+	cmd := newLockWatchCmd(client, du, endpoint)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	cmd.SetContext(ctx)
+	if err := cmd.RunE(cmd, []string{unlockFingerprint("s.k")}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	if f.locked || !client.Unlocked() {
+		t.Fatal("a failing probe must neither lock nor stop the watch")
+	}
+}
+
+func TestMCPWatchReportsALockFailure(t *testing.T) {
+	f := &fakeVault{outcome: "approve"}
+	client, _, du, endpoint, _, _ := unlockFixture(t, f)
+	guardSeams(t, true, nil)
+	_ = client.SetUnlock(webdaclient.Unlock{Header: unlockHeader, Key: "s.k"})
+	du.Lock = "Vault.Missing"
+	ctx, cancel := context.WithCancel(context.Background())
+	waits := 0
+	screenWait = func(ctx context.Context, _ time.Duration, _ bool) error {
+		waits++
+		if waits > 1 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	}
+	var logs []string
+	watchScreenForMCP(ctx, client, du, endpoint, func(m string) { logs = append(logs, m) })
+	if len(logs) != 1 || !strings.Contains(logs[0], "could not be locked") || !client.Unlocked() {
+		t.Fatalf("logs %v", logs)
+	}
+}
+
+func TestSpawnLockWatcherStartsADetachedProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts a process")
+	}
+	// the test binary itself: it starts, fails on the unknown flags and exits; the start must succeed
+	if err := spawnLockWatcher("p", "0123456789abcdef"); err != nil {
+		t.Fatal(err)
 	}
 }

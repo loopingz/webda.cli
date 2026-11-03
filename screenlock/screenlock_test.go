@@ -72,3 +72,18 @@ func TestWaitForUnlocked(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRunExecutesTheCommand(t *testing.T) {
+	out, err := run(context.Background(), "go", "env", "GOOS")
+	if err != nil || len(out) == 0 {
+		t.Fatal(out, err)
+	}
+	fake(t, "darwin", "error")
+	if _, err := Locked(context.Background()); err == nil {
+		t.Fatal("a failing probe must fail")
+	}
+	fake(t, "linux", "error")
+	if err := Supported(context.Background()); err == nil {
+		t.Fatal("a failing probe is not supported")
+	}
+}
