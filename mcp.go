@@ -232,6 +232,8 @@ func (s *mcpServer) call(ctx context.Context, msg rpcMessage) {
 		ctx, cancel = context.WithTimeout(ctx, s.timeout)
 		defer cancel()
 	}
+	// an unlock made (or locked) by another process since the start
+	s.client.ReloadUnlock()
 	data, err := executeOperation(ctx, t.op, s.client, s.baseURL, body)
 	if err != nil {
 		s.reply(msg.ID, map[string]any{"isError": true, "content": []map[string]any{{"type": "text", "text": err.Error()}}})
@@ -245,7 +247,7 @@ func (s *mcpServer) call(ctx context.Context, msg rpcMessage) {
 	s.reply(msg.ID, result)
 }
 
-func newMCPCmd(profile string, client *webdaclient.Client, baseURL string, ops []Operation, du *DeviceUnlock, in io.Reader) *cobra.Command {
+func newMCPCmd(profile string, prof Profile, client *webdaclient.Client, baseURL string, ops []Operation, du *DeviceUnlock, in io.Reader) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "Serve this profile's operations as MCP tools over stdio",
@@ -257,11 +259,33 @@ func newMCPCmd(profile string, client *webdaclient.Client, baseURL string, ops [
 			exclude, _ := cmd.Flags().GetString("exclude")
 			s := newMCPServer(profile, version, client, baseURL, ops, du, toolPatterns(include), toolPatterns(exclude), cmd.OutOrStdout())
 			s.timeout, _ = cmd.Flags().GetDuration("timeout")
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Serving %d tools of %s over MCP (stdio)\n", len(s.order), profile)
+			stderr := cmd.ErrOrStderr()
+			if watch, _ := cmd.Flags().GetBool("lock-on-screen-lock"); watch {
+				if du == nil {
+					return fmt.Errorf("--lock-on-screen-lock: the server advertises no vault unlock")
+				}
+				if err := screenSupported(cmd.Context()); err != nil {
+					return fmt.Errorf("--lock-on-screen-lock: %w", err)
+				}
+				endpoint := operationsEndpoint(ops, baseURL)
+				watchCtx, stop := context.WithCancel(cmd.Context())
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					watchScreenForMCP(watchCtx, client, du, endpoint, func(m string) { _, _ = fmt.Fprintln(stderr, m) })
+				}()
+				// the watcher ends with the server, never after it
+				defer func() {
+					stop()
+					<-done
+				}()
+			}
+			_, _ = fmt.Fprintf(stderr, "Serving %d tools of %s over MCP (stdio)\n", len(s.order), profile)
 			return s.serve(cmd.Context(), in)
 		},
 	}
 	cmd.Flags().String("tools", "", "comma-separated globs of the operations to serve (default: all)")
 	cmd.Flags().String("exclude", "", "comma-separated globs of the operations not to serve")
+	cmd.Flags().Bool("lock-on-screen-lock", prof.LockOnScreenLock, "lock the vault unlock whenever the screen locks while serving (macOS, Linux)")
 	return cmd
 }

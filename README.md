@@ -230,6 +230,28 @@ myapp lock      # ends the unlock on the server, then forgets it
 - The unlock is kept with the profile's tokens (same storage) and survives token refreshes. It ends with `lock`,
   `logout` (revoking the sign-in ends it on the server), its expiry or a server-side "lock everywhere"; a `423`
   answer then drops it and the CLI says to run `unlock` again.
+- **How long it lasts** is the server's choice: with Webda's token vault, 2 hours idle (each use of a stored token
+  extends it) and 12 hours at most. The CLI does not know the expiry in advance.
+- `--require-presence` (macOS): using the unlock needs Touch ID or your account password. On a Mac with a Secure
+  Enclave (Apple Silicon, T2), the unlock is stored **sealed** to a Secure Enclave key created with a user presence
+  requirement: the clear key is never written, and only that Mac's Secure Enclave, after Touch ID or the password,
+  can open it (copying the keychain or `~/.webdacli` gets nothing usable). Without a Secure Enclave (or in a build
+  without the bridge, below) the CLI asks for Touch ID itself before sending the unlock, a check of the CLI rather
+  than of the hardware. Either way the CLI sends requests without it, and on the first `423` asks once per process,
+  then retries with it; a long-running `mcp` asks at its first vault call, then keeps it.
+- `--lock-on-screen-lock` (macOS, Linux with systemd-logind): a background watcher locks the unlock (on the server,
+  then locally) when the screen locks, and exits once that unlock is gone or replaced. It polls the session state every
+  few seconds (`ioreg` on macOS, `loginctl` on Linux); without a working probe `unlock` refuses before pairing. `mcp
+  --lock-on-screen-lock` does the same while it serves, each time the screen locks.
+- Both can be profile defaults in `~/.webdacli/config.yaml`:
+
+```yaml
+myapp:
+  url: https://example.com
+  unlock_presence: true
+  lock_on_screen_lock: true
+```
+
 - A server advertises it this way (operations ids, approval page with `{pairing}`, `{session}` and `{key}`, header):
 
 ```json
@@ -515,6 +537,19 @@ git config core.hooksPath .githooks
 ```
 
 This runs `go vet`, `golangci-lint`, and `go test -race` automatically.
+
+### Building on macOS
+
+Release binaries for macOS include the Secure Enclave bridge (`enclave/bridge.swift`, CryptoKit), built for macOS 12
+and later by:
+
+```bash
+scripts/build-sebridge.sh arm64 webda-cli-darwin-arm64   # or amd64; needs Xcode command line tools (swiftc)
+```
+
+A plain `go build` / `go install` leaves it out (no `sebridge` build tag): `--require-presence` then uses the CLI's own
+Touch ID check. `go test -tags 'sebridge manual' -run Hardware ./enclave` checks the real Secure Enclave (with Touch
+ID); see `enclave/hardware_test.go` for the flags.
 
 ## Files
 
