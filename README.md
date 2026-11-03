@@ -249,6 +249,30 @@ myapp lock      # ends the unlock on the server, then forgets it
   An approval page that is not HTTPS (except localhost), without a fragment, or a reserved header
   (`Authorization`, `Cookie`...) is ignored.
 
+### MCP server
+
+`myapp mcp` serves the profile's operations as MCP tools over stdio, for MCP clients such as Claude Code or Codex.
+Each tool call is an operation request made by the CLI, with the profile's sign-in and vault unlock: the MCP client
+(and the model behind it) never sees a token or a key.
+
+```bash
+claude mcp add my-server -- myapp mcp --tools "Forge.*"
+```
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.my-server]
+command = "myapp"
+args = ["mcp", "--tools", "Forge.*"]
+```
+
+- `--tools` / `--exclude` take comma-separated globs of operation ids (default: every operation of the listing). The
+  device unlock operations are never served.
+- Sign in (`myapp auth`, with `--scope` to narrow what the tools may do) and unlock (`myapp unlock`) beforehand: the
+  server never prompts, since stdin is the protocol. A call the token does not cover, or made while the vault is
+  locked (`423`), comes back as a tool error saying what to run.
+- `--timeout` bounds each call. Logs go to stderr; stdout carries only the protocol.
+
 ### Token storage
 
 Tokens go to the OS keychain (service `webda-cli`, one entry per profile). Without a
