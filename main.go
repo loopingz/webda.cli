@@ -505,6 +505,7 @@ func runCLI() error {
 		endpoint := operationsEndpoint(ops, baseURL)
 		addIfAbsent(root, newUnlockCmd(env, cli, du, endpoint), newLockCmd(cli, du, endpoint))
 	}
+	addIfAbsent(root, newMCPCmd(profile, cli, baseURL, ops, serverInfo.DeviceUnlock, os.Stdin))
 	addExplorer(root, profile, baseURL, ops)
 	return root.Execute()
 }
