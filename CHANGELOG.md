@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.6.0](https://github.com/loopingz/webda.cli/compare/v1.5.0...v1.6.0) (2026-11-03)
+
+
+### Features
+
+* unlock guards: Secure Enclave sealing (Touch ID) and lock on screen lock ([#34](https://github.com/loopingz/webda.cli/issues/34)) ([347f2fa](https://github.com/loopingz/webda.cli/commit/347f2fab671eeec9ade17a03d7afc4ed8d11f1b7))
+* webda mcp: local stdio MCP server serving the profile's operations ([#33](https://github.com/loopingz/webda.cli/issues/33)) ([b31c7ef](https://github.com/loopingz/webda.cli/commit/b31c7ef30271b959df6e6bf714d2f53d9bad1262)), closes [#27](https://github.com/loopingz/webda.cli/issues/27)
+* webda unlock: browser-approved device unlock and a session key header ([#31](https://github.com/loopingz/webda.cli/issues/31)) ([dc765d2](https://github.com/loopingz/webda.cli/commit/dc765d26ce7dc08a4d58c299d3123b82fbf163a5)), closes [#26](https://github.com/loopingz/webda.cli/issues/26)
+
 ## [1.5.0](https://github.com/loopingz/webda.cli/compare/v1.4.1...v1.5.0) (2026-10-31)
 
 
