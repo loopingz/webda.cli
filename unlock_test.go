@@ -15,6 +15,7 @@ import (
 
 	"github.com/loopingz/webda.cli/tokenstore"
 	"github.com/loopingz/webda.cli/webdaclient"
+	"github.com/spf13/cobra"
 )
 
 const unlockHeader = "X-Example-Key"
@@ -247,5 +248,133 @@ func TestDeviceLabel(t *testing.T) {
 	}
 	if got := deviceLabel(strings.Repeat("a", 60)); len(got) != 40 {
 		t.Fatal(got)
+	}
+}
+
+func TestOperationsEndpoint(t *testing.T) {
+	if got := operationsEndpoint(nil, "https://x/"); got != "https://x/operations" {
+		t.Fatal(got)
+	}
+	ops := []Operation{{Name: "a", Source: "openapi", Endpoint: "https://x/api"}, {Name: "b", Endpoint: "https://x/ops/"}}
+	if got := operationsEndpoint(ops, "https://x"); got != "https://x/ops" {
+		t.Fatal(got)
+	}
+}
+
+func TestAddIfAbsentKeepsServerCommands(t *testing.T) {
+	root := &cobra.Command{Use: "myapp"}
+	server := &cobra.Command{Use: "unlock", Short: "server operation"}
+	root.AddCommand(server)
+	addIfAbsent(root, &cobra.Command{Use: "unlock", Short: "local"}, &cobra.Command{Use: "lock", Short: "local"})
+	unlock, _, _ := root.Find([]string{"unlock"})
+	lock, _, _ := root.Find([]string{"lock"})
+	if unlock != server || lock == nil || lock == root || lock.Short != "local" {
+		t.Fatalf("unlock %v lock %v", unlock.Short, lock.Short)
+	}
+}
+
+func TestUnlockAndLockCommands(t *testing.T) {
+	f := &fakeVault{outcome: "approve"}
+	client, _, du, endpoint, env, _ := unlockFixture(t, f)
+	stderr := &bytes.Buffer{}
+	unlock := newUnlockCmd(env, client, du, endpoint)
+	unlock.SetErr(stderr)
+	unlock.SetContext(context.Background())
+	if err := unlock.RunE(unlock, nil); err != nil || !client.Unlocked() || !strings.Contains(stderr.String(), "Unlocked.") {
+		t.Fatalf("err %v stderr %q", err, stderr.String())
+	}
+	lock := newLockCmd(client, du, endpoint)
+	lock.SetErr(stderr)
+	lock.SetContext(context.Background())
+	if err := lock.RunE(lock, nil); err != nil || client.Unlocked() {
+		t.Fatal(err)
+	}
+	stderr.Reset()
+	if err := lock.RunE(lock, nil); err != nil || !strings.Contains(stderr.String(), "not unlocked") {
+		t.Fatalf("err %v stderr %q", err, stderr.String())
+	}
+}
+
+func TestLockFailureKeepsTheUnlock(t *testing.T) {
+	f := &fakeVault{outcome: "approve"}
+	client, _, du, endpoint, _, _ := unlockFixture(t, f)
+	_ = client.SetUnlock(unlockHeader, "s.k")
+	du.Lock = "Vault.Missing"
+	lock := newLockCmd(client, du, endpoint)
+	lock.SetErr(&bytes.Buffer{})
+	lock.SetContext(context.Background())
+	if err := lock.RunE(lock, nil); err == nil || !strings.Contains(err.Error(), "404") || !client.Unlocked() {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestUnlockServerErrors(t *testing.T) {
+	cases := map[string]func(*DeviceUnlock, *fakeVault){
+		"request refused": func(du *DeviceUnlock, _ *fakeVault) { du.Request = "Vault.Missing" },
+		"status refused":  func(du *DeviceUnlock, _ *fakeVault) { du.Status = "Vault.Missing" },
+		"no pairing":      func(du *DeviceUnlock, _ *fakeVault) { du.Request = "Vault.Lock" },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeVault{outcome: "approve"}
+			client, store, du, endpoint, env, out := unlockFixture(t, f)
+			change(du, f)
+			if err := runUnlock(context.Background(), env, client, du, endpoint, out); err == nil {
+				t.Fatal("expected an error")
+			}
+			if ti, _ := store.Load("p"); ti.UnlockKey != "" {
+				t.Fatal("nothing may be stored")
+			}
+		})
+	}
+}
+
+func TestUnlockCanceledWhilePending(t *testing.T) {
+	f := &fakeVault{}
+	client, _, du, endpoint, env, out := unlockFixture(t, f)
+	ctx, cancel := context.WithCancel(context.Background())
+	env.Sleep = func(context.Context, time.Duration) error {
+		cancel()
+		return context.Canceled
+	}
+	if err := runUnlock(ctx, env, client, du, endpoint, out); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
+func TestCallOperationErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/operations/Bad.JSON" {
+			_, _ = w.Write([]byte("not json"))
+			return
+		}
+		_, _ = w.Write(nil)
+	}))
+	defer srv.Close()
+	store := newMemStore()
+	_ = store.Save("p", tokenstore.TokenInfo{AccessToken: "at", Server: srv.URL})
+	client, _ := webdaclient.New("p", srv.URL, store, nil, "webda-cli", nil)
+	var out map[string]any
+	if err := callOperation(context.Background(), client, srv.URL+"/operations", "Bad.JSON", map[string]any{}, nil, &out); err == nil {
+		t.Fatal("invalid JSON must fail")
+	}
+	if err := callOperation(context.Background(), client, srv.URL+"/operations", "Empty.Body", map[string]any{}, nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := callOperation(context.Background(), client, srv.URL+"/operations", "Bad.Input", map[string]any{"f": func() {}}, nil, nil); err == nil {
+		t.Fatal("an input that cannot be encoded must fail")
+	}
+	if err := callOperation(context.Background(), client, "http://127.0.0.1:1/operations", "Down", map[string]any{}, nil, nil); err == nil {
+		t.Fatal("an unreachable server must fail")
+	}
+}
+
+func TestExecuteOperationExplainsALockedVault(t *testing.T) {
+	f := &fakeVault{}
+	client, _, _, endpoint, _, _ := unlockFixture(t, f)
+	f.locked = true
+	_, err := executeOperation(context.Background(), Operation{Name: "Forge.GetIssue", Endpoint: endpoint}, client, "", map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "423") || !strings.Contains(err.Error(), "unlock") {
+		t.Fatal(err)
 	}
 }
