@@ -109,7 +109,7 @@ func unlockFixture(t *testing.T, f *fakeVault) (*webdaclient.Client, *memStore, 
 func TestUnlockStoresTheApprovedKeyAndSendsIt(t *testing.T) {
 	f := &fakeVault{outcome: "approve"}
 	client, store, du, endpoint, env, out := unlockFixture(t, f)
-	if err := runUnlock(context.Background(), env, client, du, endpoint, out); err != nil {
+	if err := runUnlock(context.Background(), env, client, du, endpoint, "p", unlockOptions{}, out); err != nil {
 		t.Fatal(err)
 	}
 	ti, _ := store.Load("p")
@@ -141,7 +141,7 @@ func TestUnlockStoresTheApprovedKeyAndSendsIt(t *testing.T) {
 func TestUnlockDeniedLeavesNothing(t *testing.T) {
 	f := &fakeVault{outcome: "deny"}
 	client, store, du, endpoint, env, out := unlockFixture(t, f)
-	err := runUnlock(context.Background(), env, client, du, endpoint, out)
+	err := runUnlock(context.Background(), env, client, du, endpoint, "p", unlockOptions{}, out)
 	if err == nil || !strings.Contains(err.Error(), "denied or expired") {
 		t.Fatalf("err %v", err)
 	}
@@ -154,7 +154,7 @@ func TestUnlockExpiresWhilePending(t *testing.T) {
 	f := &fakeVault{}
 	client, _, du, endpoint, env, out := unlockFixture(t, f)
 	env.Sleep = func(ctx context.Context, _ time.Duration) error { return errors.New("deadline") }
-	err := runUnlock(context.Background(), env, client, du, endpoint, out)
+	err := runUnlock(context.Background(), env, client, du, endpoint, "p", unlockOptions{}, out)
 	if err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("err %v", err)
 	}
@@ -169,7 +169,7 @@ func TestHeadlessUnlockPrintsTheApprovalPage(t *testing.T) {
 		f.mu.Unlock()
 		return errors.New("no browser")
 	}
-	if err := runUnlock(context.Background(), env, client, du, endpoint, out); err != nil {
+	if err := runUnlock(context.Background(), env, client, du, endpoint, "p", unlockOptions{}, out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "do not share") || !strings.Contains(out.String(), f.approved) {
@@ -180,7 +180,7 @@ func TestHeadlessUnlockPrintsTheApprovalPage(t *testing.T) {
 func TestLockEndsTheUnlockAnd423DropsIt(t *testing.T) {
 	f := &fakeVault{outcome: "approve"}
 	client, store, du, endpoint, env, out := unlockFixture(t, f)
-	if err := runUnlock(context.Background(), env, client, du, endpoint, out); err != nil {
+	if err := runUnlock(context.Background(), env, client, du, endpoint, "p", unlockOptions{}, out); err != nil {
 		t.Fatal(err)
 	}
 	cmd := newLockCmd(client, du, endpoint)
@@ -197,7 +197,7 @@ func TestLockEndsTheUnlockAnd423DropsIt(t *testing.T) {
 	}
 
 	// an unlock the server ended (423) is dropped
-	if err := client.SetUnlock(unlockHeader, "s.k"); err != nil {
+	if err := client.SetUnlock(webdaclient.Unlock{Header: unlockHeader, Key: "s.k"}); err != nil {
 		t.Fatal(err)
 	}
 	err := callOperation(context.Background(), client, endpoint, "Forge.GetIssue", map[string]any{}, nil, nil)
@@ -277,7 +277,7 @@ func TestUnlockAndLockCommands(t *testing.T) {
 	f := &fakeVault{outcome: "approve"}
 	client, _, du, endpoint, env, _ := unlockFixture(t, f)
 	stderr := &bytes.Buffer{}
-	unlock := newUnlockCmd(env, client, du, endpoint)
+	unlock := newUnlockCmd(env, client, du, endpoint, "p", Profile{})
 	unlock.SetErr(stderr)
 	unlock.SetContext(context.Background())
 	if err := unlock.RunE(unlock, nil); err != nil || !client.Unlocked() || !strings.Contains(stderr.String(), "Unlocked.") {
@@ -298,7 +298,7 @@ func TestUnlockAndLockCommands(t *testing.T) {
 func TestLockFailureKeepsTheUnlock(t *testing.T) {
 	f := &fakeVault{outcome: "approve"}
 	client, _, du, endpoint, _, _ := unlockFixture(t, f)
-	_ = client.SetUnlock(unlockHeader, "s.k")
+	_ = client.SetUnlock(webdaclient.Unlock{Header: unlockHeader, Key: "s.k"})
 	du.Lock = "Vault.Missing"
 	lock := newLockCmd(client, du, endpoint)
 	lock.SetErr(&bytes.Buffer{})
@@ -319,7 +319,7 @@ func TestUnlockServerErrors(t *testing.T) {
 			f := &fakeVault{outcome: "approve"}
 			client, store, du, endpoint, env, out := unlockFixture(t, f)
 			change(du, f)
-			if err := runUnlock(context.Background(), env, client, du, endpoint, out); err == nil {
+			if err := runUnlock(context.Background(), env, client, du, endpoint, "p", unlockOptions{}, out); err == nil {
 				t.Fatal("expected an error")
 			}
 			if ti, _ := store.Load("p"); ti.UnlockKey != "" {
@@ -337,7 +337,7 @@ func TestUnlockCanceledWhilePending(t *testing.T) {
 		cancel()
 		return context.Canceled
 	}
-	if err := runUnlock(ctx, env, client, du, endpoint, out); !errors.Is(err, context.Canceled) {
+	if err := runUnlock(ctx, env, client, du, endpoint, "p", unlockOptions{}, out); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 }

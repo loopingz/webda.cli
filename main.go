@@ -18,7 +18,9 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/loopingz/webda.cli/enclave"
 	"github.com/loopingz/webda.cli/oauth"
+	"github.com/loopingz/webda.cli/presence"
 	"github.com/loopingz/webda.cli/tokenstore"
 	"github.com/loopingz/webda.cli/tui"
 	"github.com/loopingz/webda.cli/updater"
@@ -430,6 +432,11 @@ func runCLI() error {
 		return err
 	}
 	cli.LockFile = lockPath(profile)
+	cli.PresenceCheck = func() error { return presence.Check("use the vault unlock of " + profile) }
+	cli.Opener = func(sealed string) (string, error) {
+		plain, err := enclave.Open(sealed, "use the vault unlock of "+profile)
+		return string(plain), err
+	}
 	fetchCtx, fetchCancel := context.WithTimeout(ctx, timeout)
 	remoteOps, info, fetchErr := fetchOperations(fetchCtx, profile, meta)
 	fetchCancel()
@@ -503,9 +510,9 @@ func runCLI() error {
 	root.AddCommand(stubCommand(newAuthCmd(env, profile, prof)), stubCommand(newLogoutCmd(env, profile, prof)))
 	if du := serverInfo.DeviceUnlock; du != nil {
 		endpoint := operationsEndpoint(ops, baseURL)
-		addIfAbsent(root, newUnlockCmd(env, cli, du, endpoint), newLockCmd(cli, du, endpoint))
+		addIfAbsent(root, newUnlockCmd(env, cli, du, endpoint, profile, prof), newLockCmd(cli, du, endpoint), newLockWatchCmd(cli, du, endpoint))
 	}
-	addIfAbsent(root, newMCPCmd(profile, cli, baseURL, ops, serverInfo.DeviceUnlock, os.Stdin))
+	addIfAbsent(root, newMCPCmd(profile, prof, cli, baseURL, ops, serverInfo.DeviceUnlock, os.Stdin))
 	addExplorer(root, profile, baseURL, ops)
 	return root.Execute()
 }

@@ -75,7 +75,8 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # darwin is built with cgo on macOS, as releases are
+    runs-on: ${{ matrix.goos == 'darwin' && 'macos-latest' || 'ubuntu-latest' }}
     strategy:
       matrix:
         goos: [linux, darwin, windows]
@@ -86,10 +87,15 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build
+        if: matrix.goos != 'darwin'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
         run: go build -o webda-cli-${{ matrix.goos }}-${{ matrix.goarch }} .
+      - name: Build (Secure Enclave bridge)
+        if: matrix.goos == 'darwin'
+        run: scripts/build-sebridge.sh ${{ matrix.goarch }} webda-cli-darwin-${{ matrix.goarch }}
 
   vet:
     name: Vet
